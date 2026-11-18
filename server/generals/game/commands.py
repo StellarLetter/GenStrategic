@@ -1,0 +1,264 @@
+"""玩家指令 → 调兵链操作（Dir / MoveRequest / CommandError / enqueue_move / clear_chain / pop_chain）。
+
+职责：把上层（net 帧解析后）的"往某方向调兵"意图校验并入队；不做任何结算。
+契约见 docs/INTERFACES.md §1.3；错误码见 docs/PROTOCOL.md §5。
+本模块无 I/O / 时间 / 随机依赖（R7.3）。
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+from .state import GameState, PlayerState, Terrain
+
+# 与 config 同源，避免两处硬编码漂移（R4.7 / INTERFACES §1.3）。
+CHAIN_LIMIT: int = 20
+
+
+class Dir(Enum):
+    """调兵方向，仅 4 相邻（R4.1 / C-03）。
+
+    ``value`` 就是线协议里的方向字符串（PROTOCOL §3.6：``"up"/"down"/"left"/"right"``），
+    因此 ``Dir("up")`` 可直接由帧字段构造。
+    """
+
+    UP = "up"
+    DOWN = "down"
+    LEFT = "left"
+    RIGHT = "right"
+
+    @property
+    def delta(self) -> tuple[int, int]:
+        """``(drow, dcol)`` 位移。"""
+        return _DELTAS[self]
+
+    @property
+    def opposite(self) -> "Dir":
+        """反方向（遭遇战判定 R4.5 用）。"""
+        return _OPPOSITE[self]
+
+
+_DELTAS: dict[Dir, tuple[int, int]] = {
+    Dir.UP: (-1, 0),
+    Dir.DOWN: (1, 0),
+    Dir.LEFT: (0, -1),
+    Dir.RIGHT: (0, 1),
+}
+
+_OPPOSITE: dict[Dir, Dir] = {
+    Dir.UP: Dir.DOWN,
+    Dir.DOWN: Dir.UP,
+    Dir.LEFT: Dir.RIGHT,
+    Dir.RIGHT: Dir.LEFT,
+}
+
+
+def dir_of(sr: int, sc: int, dr: int, dc: int, size: int) -> Dir | None:
+    """返回从 ``(sr, sc)`` 到 ``(dr, dc)`` 的方向；非 4 相邻或越界返回 ``None``。
+
+    仅供 mapgen / 测试等需要"反查方向"的场合使用（内核结算用 :class:`Flight`，不靠方向）。
+    """
+    if not (0 <= dr < size and 0 <= dc < size):
+        return None
+    delta = (dr - sr, dc - sc)
+    for d, dv in _DELTAS.items():
+        if dv == delta:
+            return d
+    return None
+
+
+@dataclass(frozen=True)
+class MoveRequest:
+    """一条调兵请求（R4.1 / C-02 / C-06）。
+
+    - ``src``：起点地块 index。
+    - ``dir``：方向（4 相邻）。
+    - ``ratio``：**入队时**的比例，``(0, 1]``（C-06 / R6.7）。
+    """
+
+    src: int
+    dir: Dir
+    ratio: float = 1.0
+
+
+class CommandError(Exception):
+    """指令校验失败。``code`` 与 PROTOCOL §5 的错误码一一对应。"""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        self.code = code
+        self.message = message or _CODE_MESSAGES.get(code, code)
+        super().__init__(f"{code}: {self.message}")
+
+
+#: 错误码 → 中文说明（PROTOCOL §5）。
+_CODE_MESSAGES: dict[str, str] = {
+    "bad_frame": "帧结构或字段非法",
+    "not_joined": "尚未加入房间",
+    "not_started": "对局未开始",
+    "not_your_turn": "已出让：玩家已出局或处于投降过渡期",
+    "not_owned": "起点地块不归你控制",
+    "not_adjacent": "方向越界或非 4 相邻",
+    "blocked": "目标为山地，不可通行",
+    "chain_full": f"调兵链已满（上限 {CHAIN_LIMIT} 条）",
+    "room_full": "房间已满",
+    "rate_limited": "指令过于频繁",
+}
+
+
+def _coerce_dir(direction: Dir | str) -> Dir:
+    """把 ``Dir`` 或协议字符串转成 :class:`Dir`；非法抛 ``CommandError('bad_frame')``。"""
+    if isinstance(direction, Dir):
+        return direction
+    try:
+        return Dir(str(direction).lower())
+    except (ValueError, TypeError) as exc:  # pragma: no cover - 防御分支
+        raise CommandError("bad_frame", f"非法方向：{direction!r}") from exc
+
+
+def _coerce_ratio(ratio: float) -> float:
+    """把比例 clamp 到 ``(0, 1]``（C-02）。
+
+    抛出：``CommandError('bad_frame')`` —— ``ratio`` 不是有限数值。
+    """
+    try:
+        value = float(ratio)
+    except (TypeError, ValueError) as exc:
+        raise CommandError("bad_frame", f"非法比例：{ratio!r}") from exc
+    if value != value:  # NaN
+        raise CommandError("bad_frame", "非法比例：nan")
+    if value > 1.0:
+        return 1.0
+    if value <= 0.0:
+        return 0.01  # 最小有效比例 1%（R6.6：范围 10%–100%，clamp 语义为"不报错、取边界"）
+    return value
+
+
+def _require_player(state: GameState, player_id: int) -> PlayerState:
+    """取玩家状态；不存在抛 ``CommandError('not_joined')``。"""
+    player = state.players.get(player_id)
+    if player is None:
+        raise CommandError("not_joined", f"不存在的玩家：{player_id}")
+    return player
+
+
+def enqueue_move(
+    state: GameState,
+    player_id: int,
+    src: int,
+    direction: Dir | str,
+    ratio: float,
+) -> None:
+    """入队一条调兵请求（INTERFACES §1.3）。
+
+    前置（依次校验，任一不满足抛对应错误码）：
+      * ``not state.ended``；
+      * 玩家存在、``alive`` 且不在投降过渡期（R5.5 / C-08）；
+      * ``src`` 在界内且归该玩家控制（R3.1）；
+      * ``direction`` 为 4 方向之一且不越界（R4.1 / C-03）→ ``not_adjacent``；
+      * 目标地块真实地形非山地（R4.9）→ ``blocked``；
+      * 调兵链长度 < ``CHAIN_LIMIT`` → ``chain_full``（R4.7）。
+    后置：``state.players[player_id].chain`` 末尾追加一条 :class:`MoveRequest`；
+          ``ratio`` 已 clamp 到 ``(0, 1]``（C-02）。
+    抛出：:class:`CommandError`，``code`` ∈
+          ``{not_started, not_your_turn, not_owned, not_adjacent, blocked, chain_full, bad_frame}``。
+    说明：0 兵力起点也允许入队（C-02，每地块兵力恒 ``>=0``，结算时得 0 兵力请求）。
+    """
+    if state.ended:
+        raise CommandError("not_started", "对局已结束")
+    player = _require_player(state, player_id)
+    if not player.can_operate():
+        raise CommandError("not_your_turn", f"玩家 {player_id} 当前不可操作")
+
+    if not isinstance(src, int) or isinstance(src, bool):
+        raise CommandError("bad_frame", f"非法起点：{src!r}")
+    if not (0 <= src < state.tile_count):
+        raise CommandError("not_owned", f"起点越界：{src}")
+    if state.tiles[src].owner != player_id:
+        raise CommandError("not_owned", f"地块 {src} 不归玩家 {player_id} 控制")
+
+    d = _coerce_dir(direction)
+    dst = state.step_index(src, d)
+    if dst is None:
+        raise CommandError("not_adjacent", f"地块 {src} 向 {d.value} 越界")
+    if state.tiles[dst].is_mountain():
+        raise CommandError("blocked", f"目标地块 {dst} 是山地（R4.9）")
+
+    if len(player.chain) >= CHAIN_LIMIT:
+        raise CommandError("chain_full")
+
+    player.chain.append(MoveRequest(src=src, dir=d, ratio=_coerce_ratio(ratio)))
+
+
+def clear_chain(state: GameState, player_id: int) -> int:
+    """清空该玩家的调兵链（R6.4 ``Q``）。
+
+    前置：玩家存在（不存在时静默返回 0，便于 net 层兜底）。
+    后置：链长度归 0；返回被清除的请求条数。
+    """
+    player = state.players.get(player_id)
+    if player is None:
+        return 0
+    removed = len(player.chain)
+    player.chain.clear()
+    return removed
+
+
+def pop_chain(state: GameState, player_id: int) -> MoveRequest | None:
+    """取消该玩家**最新**一条调兵请求（R6.4 ``E``，后进先出）。
+
+    前置：玩家存在（不存在时返回 ``None``）。
+    后置：链尾被弹出并返回；链为空返回 ``None``。
+    """
+    player = state.players.get(player_id)
+    if player is None or not player.chain:
+        return None
+    return player.chain.pop()
+
+
+def chain_snapshot(state: GameState, player_id: int) -> list[dict]:
+    """该玩家调兵链的线协议快照（PROTOCOL §3.6 ``commands`` 帧内容）。
+
+    后置：按 FIFO 顺序返回 ``[{"from": src, "dir": "up", "ratio": 1.0}, ...]``。
+    """
+    player = state.players.get(player_id)
+    if player is None:
+        return []
+    return [{"from": req.src, "dir": req.dir.value, "ratio": req.ratio} for req in player.chain]
+
+
+def launched_amount(army: int, ratio: float) -> int:
+    """实际移动兵力（R4.2 / C-02 / C-07）。
+
+    公式：``min(ceil(army * ratio), army - 1)``，再夹到 ``>= 0``。
+    前置：``army >= 0``，``ratio`` 可为任意值（内部 clamp 到 ``(0, 1]``）。
+    后置：``army == 0`` → ``0``；``army >= 1`` → ``1 <= 结果 <= army - 1``。
+    说明：``army == 0`` 时 ``army - 1 == -1``，故结果取 0（C-02 允许 0 兵力请求）。
+    """
+    if army <= 0:
+        return 0
+    r = ratio if 0.0 < ratio <= 1.0 else _coerce_ratio(ratio)
+    # ceil(army * r)：用整数运算避免浮点误差导致的向上取整漂移。
+    scaled = army * r
+    n = int(scaled)
+    if n < scaled:
+        n += 1
+    cap = army - 1
+    return max(0, min(n, cap))
+
+
+__all__ = [
+    "Dir",
+    "MoveRequest",
+    "CommandError",
+    "CHAIN_LIMIT",
+    "dir_of",
+    "enqueue_move",
+    "clear_chain",
+    "pop_chain",
+    "chain_snapshot",
+    "launched_amount",
+]
+
+# ``Terrain`` 仅在类型检查/文档层面被提及，保留导入以便 `from .commands import Terrain` 的历史用法。
+_ = Terrain
