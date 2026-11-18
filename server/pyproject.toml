@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "generals"
+version = "1.0.0"
+description = "generals.io 复刻：Python 后端（引擎 + 联网）+ TypeScript/Canvas 前端"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "httpx>=0.27",
+    "websockets>=12",
+    "pillow>=10",
+]
+
+[project.scripts]
+generals-serve = "generals.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["generals*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+filterwarnings = ["error::DeprecationWarning"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "RUF"]
+ignore = ["N815"]  # 线协议字段名用 camelCase，与前端一致

@@ -60,8 +60,20 @@ ws://<host>:<port>/ws
 | `pop` | — | 取消最新调兵请求 | R6.4 `E` |
 | `select` | `tile: int` | 选中（仅用于服务端校验与观战同步） | R6.1 |
 
-> 服务端对每条指令给出 `ack`/`reject`，`reject` 附带 `code`（§5）。
+> 服务端只在**出错**时回 `reject`（附 `code`，§5），不逐条回 `ack`——
+> 前端不需要确认帧也能靠权威 `commands` 回显（§3.6）自我校正。
 > 调兵请求只记录 `(from, dir, ratio)`，**实际兵力在结算时才计算**（C-06）。
+
+### 2.4.1 `ack`（保留帧，默认不发）
+```json
+{ "t": "ack", "op": "move", "seq": 12 }
+```
+仅当服务端需要显式确认「指令已接受且产生了可观察副作用」时才发送。
+当前实现对**所有**合法指令都不发 `ack`；客户端必须能容忍它完全缺失。
+
+### 2.4.2 未开局时的指令
+`move` 回 `reject(code="not_started")`；
+`select`/`clear`/`pop` **静默接受**（无副作用），便于前端在等待房间时预热调兵链。
 
 ### 2.5 `chat`
 ```json
@@ -102,8 +114,8 @@ ws://<host>:<port>/ws
 只发送**本刻发生变化且在当前视野内**的地块：
 ```json
 { "t": "tiles", "list": [
-  ["u", 202, 12, 0, 3],      // update: index, army, ownerId, terrain
-  ["u", 205, 0,  null, 2]    // ownerId null = 中立
+  [202, 12, 0, 3],      // index, army, ownerId, terrain
+  [205, 0,  null, 2]    // ownerId null = 中立
 ] }
 ```
 地块四元组 `[index, army, ownerId, terrain]`：
@@ -128,10 +140,12 @@ ws://<host>:<port>/ws
 ```json
 { "t": "leaderboard", "rows": [
   { "playerId": 3, "name": "Alice", "color": "red", "army": 2499, "land": 208,
-    "alive": true, "surrenderIn": null, "star": 47 }
+    "alive": true, "surrenderIn": null, "star": 0 }
 ] }
 ```
 `army` = 全部地块兵力之和，`land` = 控制地块数（C-16），均已按 R6.8 对所有人公开。
+`star` 是排行榜首列的「星数」（原站为历史战绩分）。本项目**没有评级系统，恒为 `0`**，
+字段保留只为对齐原站界面（见 RULES 附录 B `P-06`）。
 
 ### 3.6 `commands` — 权威调兵链回显
 ```json
