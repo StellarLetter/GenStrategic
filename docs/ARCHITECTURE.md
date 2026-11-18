@@ -75,13 +75,14 @@ generals/
 │   │   │   └── builtin.py       # 内置示例策略（贪心扩张）
 │   │   └── transport/
 │   │       ├── __init__.py
-│   │       ├── http_routes.py   # GET /api/rooms 等
-│   │       └── ws_routes.py     # WS /ws
-│   ├── tests/                   # pytest：内核单测 + 集成测
+│   │       ├── http_routes.py   # GET /api/rooms、/api/config、/healthz
+│   │       └── ws_routes.py     # WS /ws：只做传输适配（转交 net.session.Session）
+│   ├── tests/                   # pytest：内核单测 + 网络/AI 单测 + 集成测
 │   └── pyproject.toml
 ├── web/
 │   ├── index.html               # 游戏页（结构对齐保存页 generals.io.htm）
 │   ├── waiting.html             # 房间列表页
+│   ├── README.md                # 前端自己的上手说明
 │   ├── src/
 │   │   ├── main.ts              # 入口装配
 │   │   ├── core/                # 纯逻辑（无 DOM）
@@ -91,19 +92,22 @@ generals/
 │   │   │   ├── chains.ts        # 调兵链本地镜像 + 比例状态机
 │   │   │   └── geometry.ts      # 坐标换算、4/8 相邻
 │   │   ├── render/              # Canvas 渲染（只读核心状态）
+│   │   │   ├── palette.ts       # 实测配色（玩家色 / 地块色 / UI 色）
 │   │   │   ├── camera.ts        # 正投影视口与缩放
 │   │   │   ├── painter.ts       # 地块/兵量/选中/路径绘制
-│   │   │   └── icons.ts         # 王冠/城市/山地 图标与调色板
+│   │   │   └── icons.ts         # 王冠/城市/山地/骷髅 图标
 │   │   ├── ui/                  # DOM 面板
 │   │   │   ├── leaderboard.ts   # 排行榜（星/骷髅/兵量/地盘）
 │   │   │   ├── turn.ts          # 回合计数器
 │   │   │   └── chat.ts          # 系统消息与聊天
 │   │   └── input/
-│   │       ├── keyboard.ts      # WASD/Q/E/+/-/Esc
-│   │       └── pointer.ts       # 点击选中、点击调兵
+│   │       ├── keyboard.ts      # WASD/Q/E/+/-/方向键/Enter
+│   │       └── pointer.ts       # 点击选中、点击调兵、拖拽平移、滚轮缩放
+│   ├── public/fonts/            # Quicksand 500/700（数字字体，与原站一致）
+│   ├── scripts/                 # shot.mjs（截图）、e2e-page.mjs（真浏览器联调）
 │   ├── styles/                  # CSS（对齐截图配色与字体）
 │   └── vite.config.ts
-├── scripts/                     # 开发脚本（一键起服务、构建前端）
+├── scripts/                     # dev.ps1 / test.ps1 / e2e_smoke.py
 ├── SaveWeb/                     # 用户提供的原站存档与截图（视觉基准，只读）
 └── .gitignore
 ```
@@ -128,7 +132,7 @@ web (浏览器) ──(协议)──► transport
 ## 4. 数据流：一个 Tick 的生命周期
 
 ```
-Room 内部时钟 (asyncio, 500ms/Tick)
+Room 内部时钟 (asyncio, 500ms/Tick)；`Room.start()` 后由 `_ensure_clock()` 自动启动
   │  ① 收集：各座位在上一 Tick 提交的 commands（入队调兵链）
   │  ② tick.step(state) → TickReport
   │       ├ 阶段 1 增长      rules.apply_growth
@@ -143,25 +147,53 @@ Room 内部时钟 (asyncio, 500ms/Tick)
 WebSocket 客户端 → client.ts 解帧 → state.ts 应用 → render + ui 重绘
 ```
 
+> **`tick.step()` 的时序**：先 `state.tick += 1`，再用**新的** `(turn, half)` 跑上面六个阶段。
+> 也就是 `report.tick` 是「已进入的刻」。开局 `tick=0` 即 `Turn 0`，第一次 `step()` 落在
+> `tick=1 = Turn 0.`，所以开局首刻就会增长（R3.4 / C-01）。
+>
+> **时钟归属**：`Room.start()` 末尾调 `_ensure_clock()`，有事件循环就 `create_task(self.run())`，
+> 同步场景（单测）静默跳过并由 `step_once()` 手动推进。幂等且可由 `close()` 取消。
+
 **关键不变量**
 
 - 结算只读「刻开始时的状态 + 本刻指令」，所有遍历按 `(owner_id, tile_index)` 升序（R7.3）。
 - 每个座位的帧是对**同一份权威状态**的裁剪，裁剪规则集中在 `game/view.py`，保证不同玩家不会看到不一致的结算。
 - 前端不做任何战斗预测：点击调兵只改本地调兵链与选中态，真实结算等下一帧。
+- 连接的写 socket 只有一个出口（`Session._sender_loop`）。`Room.broadcast()` 同步往座位队列塞帧，
+  `Session` 通过 `attach_queue()` 接管该队列；换队列用哨兵唤醒已在等待的 sender，**不丢帧**。
 
 ---
 
 ## 5. 前端渲染（对齐截图）
 
-- **正投影**：地图为正方形，视口为 `11 × 11` 地块，居中于摄像机；`--cell-size` 用 CSS 变量驱动，
-  等价于原站 `#gameMap` 的 `--cell-size / --bg-size / --number-size` 三档尺寸。
-- **配色**：`styles/palette.css` 定义 8 个玩家色（`red/blue/green/teal/purple/pink/maroon/orange`）+ 中立灰/山地深灰，
-  与截图排行榜的色块一一对应。
-- **视野外**：地形被"隐藏"，只画山地或平原外观（C-17），不显示兵量。
-- **选中**：选中地块描边 + 调兵链箭头（数字表示该请求的兵力）。
+- **正投影**：地图为正方形。摄像机 `zoom = 1` 表示**整张地图正好铺满视口短边**
+  （等价于原站存档页 `#gameMap { width/height: size * --cell-size }`），滚轮在 `ZOOM_LEVELS`
+  之间切换，拖拽平移，中心被夹在地图内（地图比视口小时自动居中）。
+- **配色**：`render/palette.ts` 定义 8 个玩家色（`red/blue/green/teal/purple/pink/maroon/orange`）
+  + 中立平原 `#dcdcdc` / 山地 `#acacac` / 中立城市 `#808080` / 视野外 `#393939` / 页面底 `#222222`，
+  全部取自截图实测像素。
+- **绘制顺序**：页面底色 → 逐格填充（含网格间隙）→ 地形图标 → 兵量数字 → 调兵链箭头 → 选中白框。
+- **视野外**：一律 `#393939` 填充；只有折叠成山地外观的格子画山形（C-17）；不显示兵量（`army = null`）。
+- **可读性规则**：某格要叠兵量数字时，图标改用半透明深色退成背景纹理（`TILE.iconStrokeDimmed`），
+  否则白图标 + 白数字糊在一起——原站城市格的深色线稿 + 白色数字正是这个道理。
+- **选中**：选中地块白框 + 调兵链箭头。
 - **排行榜**：`★` 星数、玩家色块、骷髅图标（已出局）、Army / Land 三列。
+- **字体**：内置 Quicksand 500/700（`web/public/fonts/`），与原站的几何无衬线数字一致。
 
 视觉基准：`SaveWeb/屏幕截图 *.png` 与 `SaveWeb/generals.io.htm`。
+
+---
+
+## 6. 测试分层
+
+| 层 | 位置 | 覆盖 |
+| --- | --- | --- |
+| 内核单测 | `server/tests/test_kernel_*.py` | 规则 `R1..R7` 与裁决 `C-*` 逐条 |
+| 网络/AI 单测 | `server/tests/test_net_*.py`、`test_ai_*.py` | 协议编解码、房间时钟、大厅、AI 策略 |
+| 协议级端到端 | `scripts/e2e_smoke.py` | 真起 uvicorn + 真 WS 客户端跑 join/start/tick/move/chat/surrender/观战/HTTP |
+| 浏览器端到端 | `web/scripts/e2e-page.mjs` | 真 Edge 两个页面开局，断言回合计数器、排行榜行数、己方色块与雾色，并截图 |
+
+一键：`.\scripts\test.ps1`。
 
 ---
 
