@@ -33,60 +33,69 @@ export function drawMountain(ctx: Ctx, x: number, y: number, size: number, color
   ctx.restore();
 }
 
-/** 城堡图标（城市）：圆顶 + 塔身 + 拱门线稿。 */
+/** 城堡图标（城市）：尖顶 + 圆顶 + 横带 + 塔身 + 两侧小塔 + 拱门，纯线稿。 */
 export function drawCastle(ctx: Ctx, x: number, y: number, size: number, color = '#ffffff'): void {
-  const w = size * 0.62;
-  const h = size * 0.62;
-  const left = x - w / 2;
+  const s = size;
+  const w = s * 0.66;
+  const h = s * 0.82;
   const top = y - h / 2;
-  const base = top + h;
-  const lw = Math.max(1, size * 0.055);
+  const bottom = top + h;
+  const bandY = top + h * 0.32;
+  const domeR = w * 0.38;
+  const lw = Math.max(1, s * 0.05);
   ctx.save();
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
   ctx.lineWidth = lw;
   ctx.lineJoin = 'miter';
-  ctx.lineCap = 'round';
+  ctx.lineCap = 'butt';
 
-  // 顶部尖刺
+  // 尖刺 + 顶球
   ctx.beginPath();
-  ctx.moveTo(x, top);
-  ctx.lineTo(x, top + h * 0.1);
-  ctx.stroke();
-
-  // 圆顶
-  ctx.beginPath();
-  ctx.arc(x, top + h * 0.28, w * 0.24, Math.PI, 0);
-  ctx.stroke();
-
-  // 塔身
-  ctx.beginPath();
-  ctx.moveTo(left + w * 0.18, base);
-  ctx.lineTo(left + w * 0.18, top + h * 0.44);
-  ctx.lineTo(left + w * 0.82, top + h * 0.44);
-  ctx.lineTo(left + w * 0.82, base);
-  ctx.stroke();
-
-  // 两侧小塔
-  ctx.beginPath();
-  ctx.moveTo(left, base);
-  ctx.lineTo(left, top + h * 0.56);
-  ctx.lineTo(left + w * 0.18, top + h * 0.56);
+  ctx.moveTo(x, top + s * 0.05);
+  ctx.lineTo(x, bandY - domeR);
   ctx.stroke();
   ctx.beginPath();
-  ctx.moveTo(left + w, base);
-  ctx.lineTo(left + w, top + h * 0.56);
-  ctx.lineTo(left + w * 0.82, top + h * 0.56);
+  ctx.arc(x, top + s * 0.05, Math.max(1, s * 0.035), 0, Math.PI * 2);
+  ctx.fill();
+
+  // 圆顶（半圆，坐在横带上）
+  ctx.beginPath();
+  ctx.arc(x, bandY, domeR, Math.PI, 0);
   ctx.stroke();
 
-  // 拱门
+  // 横带
   ctx.beginPath();
-  const dw = w * 0.3;
-  const dx = x - dw / 2;
-  ctx.moveTo(dx, base);
-  ctx.lineTo(dx, base - h * 0.22);
-  ctx.quadraticCurveTo(x, base - h * 0.42, dx + dw, base - h * 0.22);
-  ctx.lineTo(dx + dw, base);
+  ctx.moveTo(x - w / 2, bandY);
+  ctx.lineTo(x + w / 2, bandY);
+  ctx.stroke();
+
+  // 塔身两侧竖线
+  ctx.beginPath();
+  ctx.moveTo(x - w * 0.28, bandY);
+  ctx.lineTo(x - w * 0.28, bottom);
+  ctx.moveTo(x + w * 0.28, bandY);
+  ctx.lineTo(x + w * 0.28, bottom);
+  ctx.stroke();
+
+  // 底座
+  ctx.beginPath();
+  ctx.moveTo(x - w * 0.28, bottom);
+  ctx.lineTo(x + w * 0.28, bottom);
+  ctx.stroke();
+
+  // 两侧小塔（闭合小方块）
+  const tw = w * 0.22;
+  const th = h * 0.16;
+  const ty = bandY + h * 0.09;
+  ctx.beginPath();
+  ctx.rect(x - w * 0.5, ty, tw, th);
+  ctx.rect(x + w * 0.5 - tw, ty, tw, th);
+  ctx.stroke();
+
+  // 拱门（半个圆，坐在底座上）
+  ctx.beginPath();
+  ctx.arc(x, bottom - s * 0.02, w * 0.2, Math.PI, 0);
   ctx.stroke();
 
   ctx.restore();

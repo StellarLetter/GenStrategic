@@ -59,8 +59,8 @@ export const TILE = {
   iconStroke: '#ffffff',
   /** 中立城市（#808080 中灰底）上的图标描线色：原站用深色线稿。 */
   iconStrokeOnNeutral: '#000000',
-  /** 该格还要叠兵量数字时，图标退为背景纹理用的半透明深色。 */
-  iconStrokeDimmed: 'rgba(0,0,0,0.42)',
+  /** 该格还要叠兵量数字时，图标退为背景纹理用的深色（原站城市格就是深色线稿 + 白数字）。 */
+  iconStrokeDimmed: 'rgba(0,0,0,0.72)',
 };
 
 /** 排行榜已出局行底色。 */
