@@ -56,6 +56,7 @@ def create_app(config: GameConfig | None = None, web_dist: Path | None = None) -
     app.state.web_dist = dist
 
     app.include_router(http_routes.router)
+    app.include_router(http_routes.root_router)
     app.include_router(ws_routes.router)
 
     if dist.is_dir() and (dist / "assets").is_dir():

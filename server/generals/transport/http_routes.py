@@ -59,5 +59,19 @@ async def get_config() -> JSONResponse:
 
 @router.get("/healthz")
 async def healthz() -> JSONResponse:
-    """存活探针。"""
+    """存活探针（带 `/api` 前缀的版本，等价于 `GET /healthz`）。"""
+    return JSONResponse({"ok": True})
+
+
+# 存活探针同时挂在根路径 `/healthz`（部署平台与反代通常按这个约定探测）。
+root_router = APIRouter(tags=["ops"])
+
+
+@root_router.get("/healthz")
+async def healthz_root() -> JSONResponse:
+    """存活探针。
+
+    前置：无。
+    后置：返回 `{"ok": true}`，HTTP 200；不触达 lobby / 房间，可在任意时刻调用。
+    """
     return JSONResponse({"ok": True})
