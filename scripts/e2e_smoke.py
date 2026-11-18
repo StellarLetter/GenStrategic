@@ -183,6 +183,29 @@ async def run(port: int, ticks: int) -> int:
                 else:
                     print(f"[ok] 观战者收到全图 {len(s.tiles)} 格")
 
+        # 奇数玩家（3 人房）——回归 RULES P-04：内核 mapgen 支持任意 1..8 人，
+        # 不能再出现「抬成偶数后多出一个无座位的僵尸玩家」。
+        async with (
+            websockets.connect(url) as ws_1,
+            websockets.connect(url) as ws_2,
+            websockets.connect(url) as ws_3,
+        ):
+            trio = [Player(f"P{i}", ws) for i, ws in enumerate((ws_1, ws_2, ws_3))]
+            for i, p in enumerate(trio):
+                await p.send({"t": "join", "name": f"Odd{i}", "room": "odd3"})
+                await pump(p, 0.35)
+            await trio[0].send({"t": "start"})
+            await pump(trio[0], 1.2)
+            starts = [f for f in trio[0].frames if f["t"] == "game_start"]
+            if not starts:
+                failures.append("3 人房未收到 game_start")
+            else:
+                n = len(starts[-1].get("players", []))
+                if n != 3:
+                    failures.append(f"3 人房 game_start.players = {n}，应为 3")
+                else:
+                    print(f"[ok] 3 人房 game_start.players = {n}（无僵尸玩家）")
+
         # HTTP 接口
         import httpx
 
@@ -210,6 +233,11 @@ async def run(port: int, ticks: int) -> int:
 
 
 def main() -> int:
+    # Windows 控制台默认 cp936，中文断言信息会显示成乱码；这里强制按 UTF-8 输出。
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8123)
     ap.add_argument("--ticks", type=int, default=30)
