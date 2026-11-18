@@ -40,8 +40,17 @@ generals/
 │   │   └── transport/       # FastAPI 路由：http_routes / ws_routes
 │   ├── tests/               # pytest（内核规则单测 + 集成测）
 │   └── pyproject.toml
-├── web/                     # Vite + TS：index.html / waiting.html / src/{core,render,ui,input}
-├── scripts/                 # 一键启动、构建
+├── web/                     # Vite + TS，无框架
+│   ├── index.html           # 对局页
+│   ├── waiting.html         # 房间列表页
+│   ├── src/core/            # 纯逻辑：types / geometry / state / chains / client（不碰 DOM）
+│   ├── src/render/          # Canvas：palette / camera / icons / painter
+│   ├── src/ui/              # DOM：leaderboard / turn / chat
+│   ├── src/input/           # keyboard / pointer
+│   ├── src/main.ts          # ★ 前端唯一装配点
+│   ├── styles/              # palette.css（配色变量）/ game.css / waiting.css
+│   └── scripts/             # shot.mjs（截图）、e2e-page.mjs（真浏览器联调）
+├── scripts/                 # dev.ps1 / test.ps1 / e2e_smoke.py
 └── SaveWeb/                 # 用户提供的原站存档与截图 = 视觉基准（只读，勿改）
 ```
 
@@ -59,6 +68,10 @@ web (TS, 无框架)  ──WebSocket JSON──►  transport/ ──► net/ �
 
 **一个 Tick**：`增长 → 发起调兵 → 遭遇战 → 阵地战 → 更新占领 → 检查停止抵抗`（R7.1），
 然后 `view.project()` 按座位裁剪并广播。前端不做战斗预测。
+
+> `rules.step(state)` 的时序约定：**先把 `state.tick` 自增，再用新的 `(turn, half)` 走六个阶段**。
+> 也就是「`step()` 把状态推进到第 `tick` 刻并结算该刻」，`report.tick` 是**已进入**的刻。
+> 开局 `tick=0` 即 `Turn 0`；第一次 `step()` 落在 `tick=1` = `Turn 0.`，所以开局首刻就会增长（C-01）。
 
 ---
 
@@ -78,19 +91,33 @@ web (TS, 无框架)  ──WebSocket JSON──►  transport/ ──► net/ �
 ## 5. 常用命令
 
 ```bash
-# 后端
+# ---- 首次安装 ----
 python -m venv .venv
-.venv/Scripts/python -m pip install -e "server[dev]"   # Windows
-.venv/bin/python -m pip install -e "server[dev]"       # Linux/macOS
-.venv/Scripts/python -m uvicorn generals.app:app --port 8000 --reload --app-dir server
+.venv/Scripts/python -m pip install -e "server[dev]" -i https://pypi.tuna.tsinghua.edu.cn/simple
+cd web && pnpm install && cd ..
 
-# 测试
-.venv/Scripts/python -m pytest server/tests -q
+# ---- 一条命令跑起来（构建前端 + 起服务，页面/API/WS 同端口）----
+.\scripts\dev.ps1 -Port 8000
+#    http://127.0.0.1:8000/               对局页
+#    http://127.0.0.1:8000/waiting.html   房间列表页
+# 等价写法：.venv/Scripts/python -m generals --port 8000 [--reload]
 
-# 前端
-cd web && pnpm install && pnpm dev        # http://127.0.0.1:5173 → 代理 /ws 到 8000
-pnpm build                                 # 产物由后端静态托管的目录
+# ---- 开发热更新（两个终端）----
+.venv/Scripts/python -m generals --port 8000 --reload
+cd web && pnpm dev        # http://127.0.0.1:5173 → 代理 /ws、/api 到 :8000
+
+# ---- 测试 ----
+.\scripts\test.ps1                                    # 全量：pytest + tsc + build + e2e
+.venv/Scripts/python -m pytest server/tests -q        # 只跑后端
+.venv/Scripts/python scripts/e2e_smoke.py --ticks 20  # 只跑协议级端到端
+cd web && node scripts/e2e-page.mjs http://127.0.0.1:8000 ../.dispatch/live.png  # 真浏览器
+
+# ---- 前端 ----
+cd web && pnpm exec tsc --noEmit   # 类型检查（strict + noUnusedLocals）
+cd web && pnpm build               # 产物 web/dist，由后端静态托管
 ```
+
+> `?demo=1` 是不连服务端的本地演示棋盘，用来做视觉比对截图（见 `web/src/main.ts` 的 `loadDemo`）。
 
 ---
 

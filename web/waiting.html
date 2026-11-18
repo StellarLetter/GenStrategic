@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Generals — 房间列表</title>
+    <link rel="stylesheet" href="/styles/palette.css" />
+    <link rel="stylesheet" href="/styles/waiting.css" />
+  </head>
+  <body>
+    <div id="waiting-page">
+      <header class="waiting-header">
+        <h1>generals</h1>
+        <p class="waiting-subtitle">房间列表</p>
+      </header>
+
+      <section class="waiting-controls">
+        <label for="nickname">昵称</label>
+        <input id="nickname" type="text" maxlength="16" autocomplete="off" placeholder="Player" />
+        <button id="refresh-button" type="button">刷新</button>
+        <button id="create-button" type="button">创建房间</button>
+      </section>
+
+      <section class="waiting-list">
+        <table id="room-table">
+          <thead>
+            <tr>
+              <th>房间</th>
+              <th>玩家</th>
+              <th>状态</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody id="room-tbody"></tbody>
+        </table>
+        <p id="empty-hint" hidden>暂无房间，点「创建房间」开一局。</p>
+      </section>
+    </div>
+    <script type="module" src="/src/waiting.ts"></script>
+  </body>
+</html>

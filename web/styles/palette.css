@@ -1,0 +1,69 @@
+@font-face {
+  font-family: 'Quicksand';
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url('/fonts/quicksand-500.ttf') format('truetype');
+}
+
+@font-face {
+  font-family: 'Quicksand';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts/quicksand-700.ttf') format('truetype');
+}
+
+:root {
+  --font-ui-regular: Quicksand, 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB',
+    'Noto Sans CJK SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', 'Liberation Sans', sans-serif;
+  --font-ui-bold: Quicksand, 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB',
+    'Noto Sans CJK SC', 'Source Han Sans SC', 'WenQuanYi Micro Hei', 'Liberation Sans', sans-serif;
+
+  /* 玩家色：取自 SaveWeb 截图排行榜色块（.dispatch/palette*.py） */
+  --color-red: #ff0000;
+  --color-blue: #2792ff;
+  --color-green: #008000;
+  --color-teal: #008080;
+  --color-purple: #800080;
+  --color-pink: #f032e6;
+  --color-maroon: #9b0101;
+  --color-orange: #fa8c01;
+
+  /* 地图 / 界面底色 */
+  --bg-page: #222222;
+  --bg-fog: #393939;
+  --tile-neutral-plain: #dcdcdc;
+  --tile-mountain: #acacac;
+  --tile-neutral-city: #808080;
+  --grid-line: #000000;
+  --dead-row: #666666;
+  --accent: #75baba;
+  --gold: #ffd700;
+  --chat-bg: #111111;
+  --chat-text: #dcdcdc;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-page);
+  color: #ffffff;
+  font-family: var(--font-ui-regular);
+  font-weight: 500;
+}
+
+input,
+button,
+select,
+textarea {
+  font-family: var(--font-ui-regular);
+  font-weight: 500;
+}

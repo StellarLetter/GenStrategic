@@ -1,0 +1,94 @@
+/* waiting.css — 房间列表页样式（与游戏页同一套配色）。 */
+
+#waiting-page {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.waiting-header h1 {
+  margin: 0;
+  font-size: 34px;
+  letter-spacing: 1px;
+  color: #ffffff;
+}
+
+.waiting-subtitle {
+  margin: 4px 0 20px;
+  color: #999999;
+  font-size: 14px;
+}
+
+.waiting-controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+
+.waiting-controls label {
+  color: #cccccc;
+  font-size: 14px;
+}
+
+.waiting-controls input {
+  padding: 7px 10px;
+  width: 180px;
+  color: #ffffff;
+  background: #333333;
+  border: 1px solid #555555;
+  border-radius: 3px;
+  outline: none;
+}
+
+.waiting-controls input:focus {
+  border-color: var(--accent);
+}
+
+.waiting-controls button,
+#room-table button {
+  padding: 7px 16px;
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--accent);
+  background: #ffffff;
+  border: none;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.waiting-controls button:hover,
+#room-table button:hover {
+  color: #ffffff;
+  background: var(--accent);
+}
+
+#room-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+#room-table th,
+#room-table td {
+  padding: 9px 12px;
+  text-align: left;
+  border-bottom: 1px solid #3a3a3a;
+}
+
+#room-table th {
+  color: #aaaaaa;
+  font-weight: 700;
+  border-bottom-color: #555555;
+}
+
+#room-table td {
+  color: #eeeeee;
+}
+
+#empty-hint {
+  margin-top: 16px;
+  color: #888888;
+  font-size: 14px;
+}
