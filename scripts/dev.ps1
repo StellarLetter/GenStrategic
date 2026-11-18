@@ -1,4 +1,4 @@
-# 一键启动（PowerShell）。用法：  .\scripts\dev.ps1
+﻿# 一键启动（PowerShell）。用法：  .\scripts\dev.ps1
 # 默认：构建前端 → 起 uvicorn（同一端口同时提供页面 / API / WS）
 # 参数：-Port 8000  -NoBuild  -Reload
 param(
