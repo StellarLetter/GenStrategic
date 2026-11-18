@@ -11,6 +11,7 @@ web/dist/
 .vite/
 
 # 构建 / 临时
+build/
 *.log
 .DS_Store
 # 内部派工与临时产物，不入库

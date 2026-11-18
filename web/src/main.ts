@@ -114,6 +114,13 @@ function draw(): void {
   turnCounter.render(state);
   leaderboard.render(state);
   chat.render(state);
+  syncButtons();
+}
+
+/** 按对局阶段切换按钮可见性（开局前显示 Start，开局后显示 Surrender）。 */
+function syncButtons(): void {
+  startButton.hidden = state.started;
+  surrenderButton.hidden = !state.started || state.me === null;
 }
 
 // ------------------------------------------------------------ 输入
@@ -222,15 +229,8 @@ client.onFrame = (frame: ServerFrame) => {
     chain = { ...chain, chain: state.chain };
   }
   if (isStart && state.me !== null) pendingRecenter = true;
-  syncButtons();
   draw();
 };
-
-/** 按对局阶段切换按钮可见性（开局前显示 Start，开局后显示 Surrender）。 */
-function syncButtons(): void {
-  startButton.hidden = state.started;
-  surrenderButton.hidden = !state.started || state.me === null;
-}
 
 client.onStatus = (status) => {
   page.dataset.status = status;
