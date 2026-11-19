@@ -131,7 +131,7 @@ def test_two_players_versus_neutral_garrison_r4_3() -> None:
         Flight(owner=1, src=2, dst=9, amount=25),
     ]
     result = resolve_battle(arrivals, tile)
-    assert result.owners == (NEUTRAL_OWNER, 0, 1) or result.owners == (0, 1, NEUTRAL_OWNER)
+    assert result.owners == (NEUTRAL_OWNER, 0, 1)  # 伪 owner 排在最前（-1 < 0 < 1）
     assert result.winner == NEUTRAL_OWNER
     assert result.remaining == 10  # 40 - 30
 
