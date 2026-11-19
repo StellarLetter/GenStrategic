@@ -5,10 +5,12 @@
  * 方法：逐格取边界主色与排行榜色块主色（见 .dispatch/palette*.py / samples.py）。
  *
  * 实测结论：
- *   - 页面底色 #222222，视野外地块填充 #393939（平原/山地在雾中同底色）。
- *   - 视野外「山形」用 #dcdcdc 描线画在山形图标上（RULES C-17）。
+ *   - 页面底色 #222222；地图底色与视野外地块填充同为 #393939
+ *     （原站的迷雾是一片连续底色，视野外地块之间**没有**网格线）。
+ *   - 山形图标一律纯黑 #000000：视野外画在 #393939 上（几乎隐入底色），
+ *     视野内画在 #acacac 上（RULES R6.9），线宽约格子的 2%。
  *   - 视野内中立平原 #dcdcdc、山地 #acacac、城市 #808080。
- *   - 网格线纯黑，宽度约为格子的 4%。
+ *   - 网格线纯黑，宽度约为格子的 4%，只出现在视野内的地块之间。
  */
 
 import type { ColorName, TerrainCode } from '../core/types';
@@ -40,7 +42,7 @@ export const PLAYER_COLOR_ORDER: ColorName[] = [
 export const BG = {
   /** 页面底色（地图区域之外）。 */
   page: '#222222',
-  /** 视野外地块填充。 */
+  /** 地图底色 = 视野外地块填充（两者同色，迷雾因此是连续一片）。 */
   fog: '#393939',
 };
 
@@ -51,10 +53,10 @@ export const TILE = {
   mountain: '#acacac',
   /** 视野内中立城市。 */
   neutralCity: '#808080',
-  /** 网格线。 */
+  /** 网格线（视野内地块之间的缝隙）。 */
   grid: '#000000',
-  /** 山峰图标描线色（浅底上用亮灰，深底上用更亮）。 */
-  mountainStroke: '#dcdcdc',
+  /** 山形图标描线色：视野内外都是纯黑。 */
+  mountainStroke: '#000000',
   /** 有主地块（玩家色底）上的图标描线色。 */
   iconStroke: '#ffffff',
   /** 中立城市（#808080 中灰底）上的图标描线色：原站用深色线稿。 */
@@ -76,7 +78,7 @@ export const UI = {
 
 /**
  * 地块填充色。
- * `seen=false` ⇒ 视野外：一律 fog（RULES C-17 只折叠"外观"，不折叠底色）。
+ * `seen=false` ⇒ 视野外：一律 fog（RULES R6.9 只折叠"外观"，不折叠底色）。
  */
 export function tileFill(terrain: TerrainCode, owner: ColorName | null, seen: boolean): string {
   if (!seen) return BG.fog;

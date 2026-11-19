@@ -5,7 +5,8 @@
  * 视觉基准：SaveWeb/屏幕截图 2026-11-18 190403.png（全局）/ 192622.png（放大）。
  *
  * 绘制顺序（对齐原站）：
- *   ① 页面底色 → ② 逐格填充（含网格间隙）→ ③ 地形/控制图标 → ④ 兵量数字（覆盖在图标之上）
+ *   ① 地图底色 → ② 逐格填充（视野内先铺满网格线色再内缩填充；视野外整格填雾色，
+ *      使迷雾连成一片、不出现网格线）→ ③ 地形/控制图标 → ④ 兵量数字（覆盖在图标之上）
  *   → ⑤ 调兵链箭头 → ⑥ 选中描边
  */
 
@@ -37,22 +38,30 @@ export function paint(
   ctx.save();
   ctx.setTransform(cam.dpr, 0, 0, cam.dpr, 0, 0);
 
-  // ① 页面底色
-  ctx.fillStyle = BG.page;
+  // ① 地图底色（与原站一致：地图区域底色 = 迷雾色）
+  ctx.fillStyle = BG.fog;
   ctx.fillRect(0, 0, cam.width, cam.height);
 
   const { row0, row1, col0, col1 } = visibleRange(cam);
   const cell = cellSize(cam);
 
-  // ② 填充
+  // ② 填充：视野内 = 黑色格子打底 + 内缩地块（缝隙因此是纯黑网格线）；
+  //    视野外 = 整格雾色（相邻地块无缝，迷雾是一片连续底色）。
   for (let row = row0; row <= row1; row += 1) {
     for (let col = col0; col <= col1; col += 1) {
       const index = row * cam.size + col;
       const tile = state.tiles[index];
       if (!tile) continue;
       const r = tileRect(cam, index);
-      ctx.fillStyle = tileFill(tile.terrain, colorNameOf(state, tile), tile.seen);
-      ctx.fillRect(r.x + r.gap / 2, r.y + r.gap / 2, r.fill, r.fill);
+      if (tile.seen) {
+        ctx.fillStyle = TILE.grid;
+        ctx.fillRect(r.x, r.y, r.w, r.w);
+        ctx.fillStyle = tileFill(tile.terrain, colorNameOf(state, tile), true);
+        ctx.fillRect(r.x + r.gap / 2, r.y + r.gap / 2, r.fill, r.fill);
+      } else {
+        ctx.fillStyle = BG.fog;
+        ctx.fillRect(r.x, r.y, r.w, r.w);
+      }
     }
   }
 
@@ -99,8 +108,8 @@ function colorNameOf(state: ClientState, tile: Tile): ColorName | null {
 
 /**
  * 地形图标。
- * 视野外：只有折叠成「山地外观」的地块画山形（C-17），描线用亮灰 #dcdcdc。
- * 视野内：山地画山形、城市画城堡、首都画王冠。
+ * 视野外：只有折叠成「山地外观」的地块画山形（R6.9），描线纯黑（#000000，在迷雾上很淡）。
+ * 视野内：山地画山形（黑线 + #acacac 底）、城市画城堡、首都画王冠。
  *
  * `dimmed` = 该格还要叠兵量数字。此时图标改用半透明深色，退成背景纹理，
  * 让白色数字读得清（原站城市格上正是深色线稿 + 白色数字）。

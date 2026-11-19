@@ -1,35 +1,37 @@
 /**
  * icons.ts — 地块图标：王冠（首都）、城堡（城市）、山峰（山地）。
  *
- * 全部用 Canvas 路径绘制，缩放无关；风格对齐原站 SaveWeb 截图 192622.png / 190403.png：
- *   - 山峰 = 两段「∧∧」折线，线宽约格子的 5%
+ * 全部用 Canvas 路径绘制，缩放无关；风格对齐原站 SaveWeb 截图 192622.png / 190403.png / 190745.png：
+ *   - 山峰 = 一段折线（左高右低两峰，谷底悬空），纯黑、线宽约格子的 2%
  *   - 城堡 = 圆顶 + 塔身 + 拱门线稿
  *   - 王冠 = 三尖冠 + 底带
  */
 
 export type Ctx = CanvasRenderingContext2D;
 
-/** 山峰图标：双峰折线（原站为「∧∧」，不是锯齿）。 */
-export function drawMountain(ctx: Ctx, x: number, y: number, size: number, color = '#ffffff'): void {
-  const w = size * 0.66;
-  const h = size * 0.34;
+/**
+ * 山峰图标：双峰折线。
+ * 形状按原站截图 190745 实测：宽 ≈ 0.74 格、高 ≈ 0.50 格，左峰到顶、右侧小峰略低，
+ * 两峰之间的谷底不落到基线；线宽 ≈ 格子的 2%（原站 55 px 格宽上只有 1 px）。
+ */
+export function drawMountain(ctx: Ctx, x: number, y: number, size: number, color = '#000000'): void {
+  const w = size * 0.74;
+  const h = size * 0.5;
   const left = x - w / 2;
   const bottom = y + h / 2;
-  const peak = bottom - h;
-  const mid = bottom - h * 0.28;
+  const top = bottom - h;
   ctx.save();
   ctx.strokeStyle = color;
-  ctx.lineWidth = Math.max(1, size * 0.055);
+  ctx.lineWidth = Math.max(1, size * 0.02);
   ctx.lineJoin = 'miter';
   ctx.lineCap = 'butt';
   ctx.beginPath();
   ctx.moveTo(left, bottom);
-  ctx.lineTo(left + w * 0.25, peak);
-  ctx.lineTo(left + w * 0.5, bottom);
-  ctx.lineTo(left + w * 0.75, peak);
+  ctx.lineTo(left + w * 0.33, top); // 左峰顶
+  ctx.lineTo(left + w * 0.48, bottom - h * 0.47); // 谷底（不落基线）
+  ctx.lineTo(left + w * 0.69, top + h * 0.17); // 右峰顶（略低）
   ctx.lineTo(left + w, bottom);
   ctx.stroke();
-  void mid;
   ctx.restore();
 }
 
