@@ -23,23 +23,37 @@ TICKS_PER_TURN: int = 2
 # 地图（R2.1 / INTERFACES §1.2）
 # ---------------------------------------------------------------------------
 
-#: 地图边长下限。
+#: 地图边长下限（R2.3 clamp 下界）。
 MIN_SIZE: int = 10
-#: 地图边长上限。
+#: 地图边长上限（R2.3 clamp 上界）。
 MAX_SIZE: int = 40
-#: 默认地图边长。
+#: 默认地图边长（仅供参考/UI 展示；**开局边长一律由 R2.3 公式算出**）。
 DEFAULT_SIZE: int = 20
 #: 一局最多玩家数（PlayerId ∈ 0..7，见 INTERFACES 约定）。
 MAX_PLAYERS: int = 8
 
-#: 地图生成：山地占全球块的比例（参考原站，约 20%）。
+# ---------------------------------------------------------------------------
+# 地图边长公式（R2.3）：size = clamp(SIZE_BASE + SIZE_PER_PLAYER*N + rand(0..JITTER), MIN, MAX)
+# ---------------------------------------------------------------------------
+
+#: R2.3 公式的常数项。
+SIZE_BASE: int = 6
+#: R2.3 公式里每名玩家贡献的边长。
+SIZE_PER_PLAYER: int = 3
+#: R2.3 公式里随机抖动的上界（含），取自地图种子：rand(0..SIZE_JITTER_MAX)。
+SIZE_JITTER_MAX: int = 6
+
+#: 地图生成：山地占全球块的比例（R2.7，参考原站，约 20%）。
 MAPGEN_MOUNTAIN_RATIO: float = 0.20
-#: 地图生成：城市（含首都以外）占全球块的比例（参考原站，约 4%）。
+#: 地图生成：城市（不含首都）占全球块的比例（R2.7，参考原站，约 4%）。
 MAPGEN_CITY_RATIO: float = 0.04
-#: 地图生成：首都 3 格（8 邻两步）内不放山地的半径（避免被闷死）。
+#: 地图生成：首都周围 2 格（8 邻两步）内不放山地的半径（R2.7，避免被闷死）。
 MAPGEN_CAPITAL_CLEAR_RADIUS: int = 2
-#: 地图生成：任意两座首都之间的最小切比雪夫距离系数（乘以 size 后取整）。
-MAPGEN_CAPITAL_MIN_DIST: int = 4
+#: 首都之间的最小**曼哈顿**距离（R2.5：L1 距离，4 相邻步数）。
+#: 注意：这是曼哈顿距离，与切比雪夫距离不等价，不要复用切比雪夫工具函数。
+CAPITAL_MIN_MANHATTAN: int = 13
+#: 首都摆放放不下时的换种子重试上限（R2.6）；全部失败抛 MapGenError。
+MAPGEN_MAX_ATTEMPTS: int = 64
 
 # ---------------------------------------------------------------------------
 # 兵力（R3.2 / R3.3 / R3.4）
@@ -51,18 +65,18 @@ CAPITAL_START_ARMY: int = 1
 CITY_NEUTRAL_ARMY_MIN: int = 40
 #: 城市/首都中立兵力上界（R3.3）。
 CITY_NEUTRAL_ARMY_MAX: int = 50
-#: 首都与城市每回合增长量（R3.4 / C-01）。
+#: 首都与城市每回合增长量（R3.4 / R3.7）。
 CITY_GROWTH_PER_TURN: int = 1
-#: 平原增长周期：每 25 回合 +1，首次刷新在 Turn 25.（R3.4 / C-01）。
+#: 平原增长周期：每 25 回合 +1，首次刷新在 Turn 25.（R3.4 / R3.7）。
 PLAIN_GROWTH_PERIOD: int = 25
 #: 平原每次刷新增长量（R3.4）。
 PLAIN_GROWTH_AMOUNT: int = 1
 
 # ---------------------------------------------------------------------------
-# 停止抵抗 / 投降（R5.5 / C-08）
+# 停止抵抗 / 投降（R5.5）
 # ---------------------------------------------------------------------------
 
-#: 投降过渡期长度（Tick）（R5.5 / C-08）。
+#: 投降过渡期长度（Tick）（R5.5）。
 SURRENDER_TICKS: int = 40
 #: 王城继承时每块地保留的兵力下限（R5.2：max(army // 2, 1)）。
 INHERIT_MIN_ARMY: int = 1
@@ -73,8 +87,11 @@ INHERIT_MIN_ARMY: int = 1
 
 #: 单名玩家的调兵链上限；超出抛 CommandError('chain_full')。
 CHAIN_LIMIT: int = 20
-#: 调兵比例默认值（C-02 / R6.6）。
+#: 调兵比例默认值（R6.6）。
 DEFAULT_RATIO: float = 1.0
+#: 调兵比例下界 / 上界（R6.6：10%–100%，`+`/`-` 步长 10%）。
+RATIO_MIN: float = 0.1
+RATIO_MAX: float = 1.0
 
 # ---------------------------------------------------------------------------
 # 房间（net 层读取；内核不依赖）
@@ -117,11 +134,11 @@ class GameConfig:
     min_size: int = MIN_SIZE
     max_size: int = MAX_SIZE
     chain_limit: int = CHAIN_LIMIT  # 调兵链上限（R4.7）
-    surrender_ticks: int = SURRENDER_TICKS  # 投降过渡期（R5.5 / C-08）
+    surrender_ticks: int = SURRENDER_TICKS  # 投降过渡期（R5.5）
     capital_army: int = CAPITAL_START_ARMY  # R3.2
     city_army_min: int = CITY_NEUTRAL_ARMY_MIN  # R3.3
     city_army_max: int = CITY_NEUTRAL_ARMY_MAX  # R3.3
-    plain_growth_period: int = PLAIN_GROWTH_PERIOD  # R3.4 / C-01
+    plain_growth_period: int = PLAIN_GROWTH_PERIOD  # R3.4 / R3.7
     grow_per_tick: int = CITY_GROWTH_PER_TURN  # R3.4（城市/首都每回合 +1）
 
     def clamp_size(self, size: int) -> int:
@@ -145,10 +162,14 @@ __all__ = [
     "MAX_SIZE",
     "DEFAULT_SIZE",
     "MAX_PLAYERS",
+    "SIZE_BASE",
+    "SIZE_PER_PLAYER",
+    "SIZE_JITTER_MAX",
     "MAPGEN_MOUNTAIN_RATIO",
     "MAPGEN_CITY_RATIO",
     "MAPGEN_CAPITAL_CLEAR_RADIUS",
-    "MAPGEN_CAPITAL_MIN_DIST",
+    "CAPITAL_MIN_MANHATTAN",
+    "MAPGEN_MAX_ATTEMPTS",
     "CAPITAL_START_ARMY",
     "CITY_NEUTRAL_ARMY_MIN",
     "CITY_NEUTRAL_ARMY_MAX",

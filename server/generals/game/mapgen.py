@@ -1,302 +1,210 @@
-"""地图生成：中心对称（180° 旋转）地图，可复现（R2 / R7.3）。
+"""地图生成：**无对称**随机地图，可复现（R2.1–R2.7 / R7.3）。
 
 职责：只要给一个**已播种**的 ``random.Random`` 实例，就产出确定的地图。
-契约见 docs/INTERFACES.md §1.2。
+契约见 docs/INTERFACES.md §1.2、docs/RULES.md §2。
+
 本模块**不自行创建 Random、不调用 random 模块级函数**（BRIEF 硬性要求），
 随机性完全来自调用方注入的 ``rng``（房间号派生），因此对局结算依然无随机。
+
+规则要点：
+  * R2.3 边长由玩家数决定：``size = clamp(SIZE_BASE + SIZE_PER_PLAYER*N + rand(0..6), 10, 40)``；
+  * R2.4 地图**无任何对称结构**：地形与首都位置均独立随机；
+  * R2.5 任意两座首都的**曼哈顿**距离 ``>= CAPITAL_MIN_MANHATTAN``（13），
+    首都可落在任意格子（含边缘与角落）；
+  * R2.6 放不下就**换随机序列重试**（边长保持不变），全部失败抛 :class:`MapGenError`。
 """
 
 from __future__ import annotations
 
 import random
-from dataclasses import dataclass
 
 from .. import config
 from .state import GameState, PlayerState, Terrain, Tile
+
+__all__ = [
+    "generate",
+    "MapGenError",
+    "MIN_SIZE",
+    "MAX_SIZE",
+    "DEFAULT_SIZE",
+    "CAPITAL_MIN_MANHATTAN",
+    "MAX_ATTEMPTS",
+    "size_for_players",
+    "manhattan",
+]
 
 #: 对外暴露的地图尺寸常量（与 config 同源，方便 `mapgen.MIN_SIZE` 用法）。
 MIN_SIZE: int = config.MIN_SIZE
 MAX_SIZE: int = config.MAX_SIZE
 DEFAULT_SIZE: int = config.DEFAULT_SIZE
+#: 首都最小曼哈顿间距（R2.5）。
+CAPITAL_MIN_MANHATTAN: int = config.CAPITAL_MIN_MANHATTAN
+#: 换种子重试上限（R2.6）。
+MAX_ATTEMPTS: int = config.MAPGEN_MAX_ATTEMPTS
 
 
 class MapGenError(ValueError):
-    """地图生成参数非法（尺寸/玩家数越界）。"""
+    """地图生成失败（玩家数越界，或随机重试用尽仍摆不下首都）。"""
 
 
-@dataclass(frozen=True)
-class _Candidate:
-    """候选地块（用于分层摆放，避免依赖随机抽样的顺序）。"""
+def manhattan(a: int, b: int, size: int) -> int:
+    """两格的**曼哈顿距离**（L1，4 相邻步数）。R2.5 用它判定首都间距。
 
-    idx: int
-    score: int
-
-
-def _canonical(idx: int, size: int) -> int:
-    """180° 旋转对称下的规范代表元：同一条对称轨道内两格取较小者（R7.3）。"""
-    return min(idx, size * size - 1 - idx)
-
-
-def _build_orbits(size: int) -> list[tuple[int, int]]:
-    """把全部地块切成 180° 对称轨道，返回 ``[(canonical, mirror), ...]``（按 canonical 升序）。
-
-    中心格（``size`` 为奇数时存在）的镜像就是它自己。
+    前置：``a`` / ``b`` 为合法地块 index，``size`` 为地图边长。
+    后置：返回 ``|Δrow| + |Δcol|``，与切比雪夫距离**不等价**（勿混用）。
+    抛出：无。
     """
-    total = size * size
-    seen: set[int] = set()
-    orbits: list[tuple[int, int]] = []
-    for idx in range(total):
-        if idx in seen:
-            continue
-        mirror = total - 1 - idx
-        seen.add(idx)
-        seen.add(mirror)
-        orbits.append((min(idx, mirror), max(idx, mirror)))
-    orbits.sort()
-    return orbits
-
-
-def _chebyshev(a: int, b: int, size: int) -> int:
-    """两格的切比雪夫距离（8 方向步数），用于首都间距与保护圈。"""
     ar, ac = divmod(a, size)
     br, bc = divmod(b, size)
-    return max(abs(ar - br), abs(ac - bc))
+    return abs(ar - br) + abs(ac - bc)
 
 
-def _ring_distance(idx: int, size: int) -> int:
-    """地块到地图边界的层数（0 = 最外圈），用于让首都靠近地图中部。"""
-    row, col = divmod(idx, size)
-    return min(row, col, size - 1 - row, size - 1 - col)
+def _size_bounds() -> tuple[int, int]:
+    """R2.3 clamp 的上下界。"""
+    return config.MIN_SIZE, config.MAX_SIZE
 
 
-def _center_index(size: int) -> int:
-    """地图正中心地块 index（``generate`` 中供奇数玩家的"多出来的那座首都"使用）。"""
-    return (size // 2) * size + size // 2
+def _compute_size(player_count: int, rng: random.Random) -> int:
+    """按 R2.3 计算边长：``clamp(6 + 3N + rand(0..6), 10, 40)``。
 
-
-def _place_capitals(size: int, player_count: int, rng: random.Random) -> list[int]:
-    """选出 ``player_count`` 座首都的 index 列表（升序）。
-
-    策略（BRIEF：对称放置 + 两两距离足够；lead 裁决支持任意 1..8 人）：
-      1. **偶数**：180° 中心对称成对放置，返回 ``player_count`` 个位置；
-      2. **奇数**：先成对放置 ``player_count - 1`` 座，剩下那座放在**地图正中心**
-         （``(size//2, size//2)``）；若正中心与镜像对过近，则在中心 3×3 内沿固定顺序
-         （先对角线、再正交）挑第一个满足间距的格子，保证可复现（只用传入 ``rng``）；
-      3. 候选按"离边界层数降序 + index 升序"排序后，对前若干候选做一次注入式洗牌
-         （种子决定），其余保持确定顺序；
-      4. 所有首都两两切比雪夫距离 >= ``MAPGEN_CAPITAL_MIN_DIST``（随地图尺寸缩放）。
-    抛出：:class:`MapGenError` —— 该尺寸下放不下这么多互不干扰的首都。
+    前置：``player_count`` 已校验在 ``[1, MAX_PLAYERS]``。
+    后置：返回 ``[MIN_SIZE, MAX_SIZE]`` 内的整数；``rand`` 取自 ``rng``。
+    抛出：无。
     """
-    pairs = player_count // 2
-    needs_center = player_count % 2 == 1
-    # 奇数玩家时先成对放 ``player_count - 1`` 座，最后那座交给中心逻辑。
-    paired_target = player_count - 1 if needs_center else player_count
-    total = size * size
-    min_dist = max(2, int(config.MAPGEN_CAPITAL_MIN_DIST * size / 20) or 2)
-    center = _center_index(size)
-
-    orbits = _build_orbits(size)
-    candidates = [c for c in orbits if c[0] != c[1]]
-    # 奇数玩家时把中心格让给"多出来的那座首都"，成对候选不得占用它。
-    if needs_center:
-        candidates = [c for c in candidates if center not in c]
-    # 稳定的池化：先按"中部优先"排序，再对同层候选做一次注入式洗牌（种子决定）。
-    candidates.sort(key=lambda c: (-_ring_distance(c[0], size), c[0]))
-    pool = max(pairs * 6, 12)
-    if len(candidates) > pool:
-        head = candidates[:pool]
-        tail = candidates[pool:]
-        rng.shuffle(head)
-        candidates = head + tail
-
-    chosen: list[int] = []
-    for canon, mirror in candidates:
-        if len(chosen) >= paired_target:
-            break
-        trial = [canon, mirror]
-        if any(
-            _chebyshev(a, b, size) < min_dist
-            for i, a in enumerate(trial)
-            for b in trial[i + 1 :]
-        ):
-            continue
-        if any(_chebyshev(a, b, size) < min_dist for a in trial for b in chosen):
-            continue
-        chosen.extend(trial)
-
-    if needs_center:
-        # 中心座必须与**已选成对首都及其镜像位置**都拉开距离：镜像位置虽然不一定是
-        # 首都，但它会被对称地复制成同等地形，落在那里会破坏镜像一致性。
-        blocked = set(chosen)
-        blocked.update(total - 1 - idx for idx in chosen)
-        spot = _pick_center_spot(size, sorted(blocked), min_dist, center)
-        if spot is None:
-            raise MapGenError(
-                f"地图 {size}x{size} 的中心 3x3 内找不到与现有首都拉开 {min_dist} 格的位置"
-            )
-        chosen.append(spot)
-
-    if len(chosen) < player_count:
-        raise MapGenError(
-            f"地图 {size}x{size} 放不下 {player_count} 座互不干扰的首都"
-        )
-    return sorted(chosen)
+    jitter = rng.randint(0, config.SIZE_JITTER_MAX)  # R2.3：rand(0..6) 取自地图种子
+    raw = config.SIZE_BASE + config.SIZE_PER_PLAYER * player_count + jitter
+    lo, hi = _size_bounds()
+    return max(lo, min(hi, raw))
 
 
-#: 中心微调的固定搜索顺序：先对角线，再正交（都在中心 3×3 内）。
-_CENTER_OFFSETS: tuple[tuple[int, int], ...] = (
-    (0, 0),
-    (-1, -1),
-    (1, 1),
-    (-1, 1),
-    (1, -1),
-    (0, -1),
-    (0, 1),
-    (-1, 0),
-    (1, 0),
-)
+def size_for_players(player_count: int, rng: random.Random) -> int:
+    """对外暴露的 R2.3 边长计算（会消费 ``rng`` 一次 jitter）。
 
-
-def _pick_center_spot(
-    size: int, blocked: list[int], min_dist: int, center: int
-) -> int | None:
-    """为奇数玩家的"多出来的那座首都"在中心 3×3 内选一格。
-
-    规则（lead 裁决：允许沿对角线微调、必须可复现）：
-      1. 候选固定为 :data:`_CENTER_OFFSETS` 给出的中心 3×3 顺序（先中心、再对角线、后正交）；
-      2. 跳过与 ``blocked`` 重合的格子，以及**对称不动点**（``i == total-1-i``，即正中心格）；
-         因为正中心格没有镜像伙伴，把它做成王城会让 180° 对称自检必然失败；
-      3. 在剩下的候选里取"到 ``blocked`` 的切比雪夫距离最大"者（并列取 index 最小 → 可复现）；
-         距离 >= ``min_dist`` 者优先。
-    说明：中心王城附近（中心 3×3）在 :func:`generate` 的对称自检里被整体豁免，因为
-          中心微调必然让该局部不再是 180° 对称（这是奇偶玩家数共存的代价，lead 已批准）。
+    前置：``1 <= player_count <= config.MAX_PLAYERS``。
+    后置：返回该玩家数下按公式算出的边长（``[MIN_SIZE, MAX_SIZE]``）。
+    抛出：``MapGenError`` —— 玩家数越界。
     """
-    crow, ccol = divmod(center, size)
-    total = size * size
-    scored: list[tuple[int, int]] = []
-    for dr, dc in _CENTER_OFFSETS:
-        row, col = crow + dr, ccol + dc
-        if not (0 <= row < size and 0 <= col < size):
-            continue
-        spot = row * size + col
-        if spot in blocked or spot == total - 1 - spot:
-            continue  # 被占 / 对称不动点
-        nearest = min((_chebyshev(spot, other, size) for other in blocked), default=size)
-        scored.append((nearest, spot))
-    if not scored:
-        return None
-    good = [spot for dist, spot in scored if dist >= min_dist]
-    if good:
-        return min(good)
-    best = max(dist for dist, _ in scored)
-    return min(spot for dist, spot in scored if dist == best)
-
-
-def _place_capitals_with_center(
-    size: int, player_count: int, rng: random.Random
-) -> tuple[list[int], int | None]:
-    """``_place_capitals`` 的包装：额外返回"奇数玩家时多出来的那座中心王城"。
-
-    后置：第一个元素是升序的首都 index 列表（长度恰为 ``player_count``）；
-          第二个元素仅为奇数玩家数时非 ``None``，即那座不在镜像对里的中心王城。
-    """
-    capitals = _place_capitals(size, player_count, rng)
-    if player_count % 2 == 0:
-        return capitals, None
-    total = size * size
-    extra = [c for c in capitals if (total - 1 - c) not in capitals]
-    return capitals, (extra[0] if extra else None)
-
-
-def generate(size: int, player_count: int, rng: random.Random) -> GameState:
-    """生成对称地图（INTERFACES §1.2，R2 / R7.3）。
-
-    前置：
-      * ``config.MIN_SIZE <= size <= config.MAX_SIZE``；
-      * ``1 <= player_count <= config.MAX_PLAYERS``（**任意人数，含奇数**）；
-        偶数为 180° 旋转成对放置首都；奇数时多出的那座落在中心 3×3 内（lead 裁决）；
-      * ``rng`` 为已播种的 ``random.Random`` 实例（本函数不新建、不调用模块级 random 函数）。
-    后置：
-      * 地图**中心对称**：``tiles[i]`` 与 ``tiles[size²-1-i]`` 地形相同（R7.3）；
-        **例外**：奇数玩家时中心 3×3 整块豁免（中心王城是人为微调的不对称点）；
-      * 恰好 ``player_count`` 名 ``alive=True`` 的玩家，各拥有 1 座 ``terrain = CAPITAL``、
-        ``owner = pid``、``army = 1`` 的首都（R3.2），``players[pid].capital`` 指向它；
-      * 其余城市 ``terrain = CITY``、``owner = None``、``army = rng.randint(40, 50)``（R3.3）；
-      * 山地比例约 20%、城市约 4%（BRIEF）；首都周围 3 格内无山地（不被闷死）；
-      * 其余地块为平原，``owner = None``、``army = 0``；
-      * 返回的 ``GameState`` 的 ``tick = 0``、``ended = False``、``winner = None``；
-      * 同一 ``rng`` 种子两次调用，逐格地形/兵力/归属完全相同（R7.3）。
-    抛出：
-      * :class:`MapGenError`（``ValueError``）—— 尺寸/玩家数越界、该尺寸放不下这么多首都；
-      * ``AttributeError`` —— ``rng`` 不是 ``random.Random`` 兼容对象。
-    """
-    if not isinstance(size, int) or not (MIN_SIZE <= size <= MAX_SIZE):
-        raise MapGenError(f"地图尺寸必须在 [{MIN_SIZE}, {MAX_SIZE}]，收到 {size!r}")
-    if not isinstance(player_count, int) or not (1 <= player_count <= config.MAX_PLAYERS):
+    if not isinstance(player_count, int) or not (
+        1 <= player_count <= config.MAX_PLAYERS
+    ):
         raise MapGenError(
             f"玩家数必须在 [1, {config.MAX_PLAYERS}]，收到 {player_count!r}"
         )
+    return _compute_size(player_count, rng)
 
+
+def _place_capitals(
+    size: int, player_count: int, rng: random.Random
+) -> list[int] | None:
+    """**拒绝采样**摆放 ``player_count`` 座首都（R2.4 / R2.5）。
+
+    算法：
+      1. 从全部 ``size²`` 格中均匀随机抽格子（**含边缘与角落**，不做内部优先）；
+      2. 若与已选全部首都的**曼哈顿**距离 ``>= CAPITAL_MIN_MANHATTAN`` 则接受；
+      3. 抽取次数用尽仍不满 ``player_count`` 座 → 返回 ``None``（由调用方换序列重试，R2.6）。
+
+    前置：``size`` 合法；``player_count >= 1``。
+    后置：成功时返回**升序**的 ``player_count`` 个 index（两两曼哈顿距离 >= 阈值）；
+          失败时返回 ``None``（不抛异常，交由 R2.6 重试）。
+    抛出：无。
+    """
     total = size * size
-    state = GameState(size=size, tiles=[Tile() for _ in range(total)])
+    min_dist = CAPITAL_MIN_MANHATTAN
+    chosen: list[int] = []
+    # 每次尝试给一个宽松但有界的抽样预算：平均命中率高，卡死也能及时换序列。
+    budget = max(total * 4, player_count * 64)
+    for _ in range(budget):
+        if len(chosen) >= player_count:
+            break
+        spot = rng.randrange(total)
+        if spot in chosen:
+            continue
+        if all(manhattan(spot, other, size) >= min_dist for other in chosen):
+            chosen.append(spot)
+    if len(chosen) < player_count:
+        return None
+    return sorted(chosen)
 
-    # ---- 1. 首都 ---------------------------------------------------------
-    capitals, center_cap = _place_capitals_with_center(size, player_count, rng)
 
-    # ---- 2. 保护圈：首都周围 3 格内（切比雪夫距离 2）不得是山地 ----------
+def _apply_terrain(
+    state: GameState, capitals: set[int], rng: random.Random
+) -> None:
+    """按 R2.7 比例随机落山脉与中立城市（**无对称**，独立随机）。
+
+    前置：``state.tiles`` 已全部初始化为平原；``capitals`` 为已放好的首都 index。
+    后置：
+      * 首都 8 邻 ``MAPGEN_CAPITAL_CLEAR_RADIUS`` 步内的格子不放山地（避免被闷死）；
+      * 山地约占 ``MAPGEN_MOUNTAIN_RATIO``、城市约占 ``MAPGEN_CITY_RATIO``；
+      * 城市（N2.2 "超市"）为中立、兵力 ∈ [CITY_NEUTRAL_ARMY_MIN, MAX]（R3.3）；
+      * 其余格子为平原、无控制者、兵力 0（R3.2）。
+    抛出：无。
+    """
+    total = state.tile_count
+    size = state.size
+
+    # ---- 首都保护圈：8 邻 CLEAR_RADIUS 步内禁山（R2.7）--------------------
     protected: set[int] = set()
+    radius = config.MAPGEN_CAPITAL_CLEAR_RADIUS
     for cap in capitals:
         cr, cc = divmod(cap, size)
-        for dr in range(-config.MAPGEN_CAPITAL_CLEAR_RADIUS, config.MAPGEN_CAPITAL_CLEAR_RADIUS + 1):
-            for dc in range(-config.MAPGEN_CAPITAL_CLEAR_RADIUS, config.MAPGEN_CAPITAL_CLEAR_RADIUS + 1):
+        for dr in range(-radius, radius + 1):
+            for dc in range(-radius, radius + 1):
                 r, c = cr + dr, cc + dc
                 if 0 <= r < size and 0 <= c < size:
                     protected.add(r * size + c)
     protected.update(capitals)
 
-    # ---- 3. 对称选择山地与城市轨道（约 20% 山地 / 4% 城市）----------------
-    orbits = _build_orbits(size)
-    free_orbits = [
-        o
-        for o in orbits
-        if o[0] not in protected
-        and o[0] not in capitals
-        and o[1] not in protected
-        and o[1] not in capitals
-    ]
-    rng.shuffle(free_orbits)  # 种子决定地形分布
+    # ---- 候选池：除首都（及其保护圈对山地而言）外的全部格子 -----------------
+    # 地形独立随机（R2.4）：打乱候选顺序后线性切分，保证比例稳定。
+    order = [idx for idx in range(total) if idx not in capitals]
+    rng.shuffle(order)  # 种子决定地形分布（R2.3 的随机来源）
 
-    target_mountain = int(total * config.MAPGEN_MOUNTAIN_RATIO / 2)
-    target_city = max(1, int(total * config.MAPGEN_CITY_RATIO / 2))
-    mountains: list[tuple[int, int]] = []
-    cities: list[tuple[int, int]] = []
-    for orbit in free_orbits:
-        if len(mountains) < target_mountain:
-            mountains.append(orbit)
-        elif len(cities) < target_city:
-            cities.append(orbit)
+    mountain_target = int(total * config.MAPGEN_MOUNTAIN_RATIO)
+    city_target = max(1, int(total * config.MAPGEN_CITY_RATIO))
 
-    # ---- 4. 落盘 ---------------------------------------------------------
-    for idx in capitals:
-        state.tiles[idx].terrain = Terrain.CAPITAL
-    for canon, mirror in mountains:
-        state.tiles[canon].terrain = Terrain.MOUNTAIN
-        state.tiles[mirror].terrain = Terrain.MOUNTAIN
-    for canon, mirror in cities:
-        for idx in (canon, mirror):
-            tile = state.tiles[idx]
-            tile.terrain = Terrain.CITY
-            tile.owner = None
-            tile.army = int(
-                rng.randint(config.CITY_NEUTRAL_ARMY_MIN, config.CITY_NEUTRAL_ARMY_MAX)
-            )
+    cursor = 0
+    mountains = 0
+    while mountains < mountain_target and cursor < len(order):
+        idx = order[cursor]
+        cursor += 1
+        if idx in protected:  # 首都保护圈内禁山
+            continue
+        state.tiles[idx] = Tile(terrain=Terrain.MOUNTAIN, army=0, owner=None)
+        mountains += 1
 
-    # ---- 5. 玩家与首都归属 -----------------------------------------------
+    cities = 0
+    while cities < city_target and cursor < len(order):
+        idx = order[cursor]
+        cursor += 1
+        if int(state.tiles[idx].terrain) == int(Terrain.MOUNTAIN):
+            continue
+        army = rng.randint(config.CITY_NEUTRAL_ARMY_MIN, config.CITY_NEUTRAL_ARMY_MAX)
+        state.tiles[idx] = Tile(terrain=Terrain.CITY, army=army, owner=None)
+        cities += 1
+
+
+def _build(player_count: int, size: int, rng: random.Random) -> GameState:
+    """用给定边长尝试生成一次；首都放不下时返回 ``None``（R2.6 换序列重试）。
+
+    前置：``size`` 合法；``player_count`` 合法。
+    后置：成功返回完整 ``GameState``；失败返回 ``None``。
+    抛出：无。
+    """
+    capitals = _place_capitals(size, player_count, rng)
+    if capitals is None:
+        return None
+
+    state = GameState(size=size, tiles=[Tile() for _ in range(size * size)])
+    _apply_terrain(state, set(capitals), rng)
+
+    # ---- 玩家与首都归属（R3.2：首都兵力 1）-------------------------------
     for pid in range(player_count):
         cap = capitals[pid]
         tile = state.tiles[cap]
+        tile.terrain = Terrain.CAPITAL
         tile.owner = pid
-        tile.army = config.CAPITAL_START_ARMY  # R3.2
+        tile.army = config.CAPITAL_START_ARMY
+        tile.city_from_capital = False
         state.players[pid] = PlayerState(
             player_id=pid,
             name=f"Player {pid + 1}",
@@ -306,29 +214,55 @@ def generate(size: int, player_count: int, rng: random.Random) -> GameState:
             chain=[],
             surrender_ticks_left=None,
         )
-
-    # ---- 6. 收尾不变量自检（构造错误应尽早暴露，而不是拖到结算） ----------
-    # 奇数玩家时"多出来的那座首都"落在中心 3×3 内（lead 裁决允许中心微调），
-    # 该局部必然不再 180° 对称，因此整块豁免；其余所有地块仍必须严格对称（R7.3）。
-    exempt: set[int] = set()
-    if center_cap is not None:
-        crow, ccol = divmod(_center_index(size), size)
-        for dr in range(-1, 2):
-            for dc in range(-1, 2):
-                row, col = crow + dr, ccol + dc
-                if 0 <= row < size and 0 <= col < size:
-                    exempt.add(row * size + col)
-    for idx in range(total):
-        mirror = total - 1 - idx
-        if idx in exempt or mirror in exempt:
-            continue
-        if int(state.tiles[idx].terrain) != int(state.tiles[mirror].terrain):
-            raise MapGenError(f"地图不是中心对称：{idx} 与 {mirror} 地形不一致（R7.3）")
-    for cap in capitals:
-        if not state.tiles[cap].is_capital():
-            raise MapGenError(f"首都 {cap} 地形错误")
-
     return state
 
 
-__all__ = ["generate", "MapGenError", "MIN_SIZE", "MAX_SIZE", "DEFAULT_SIZE"]
+def generate(
+    player_count: int,
+    rng: random.Random,
+    *,
+    size: int | None = None,
+) -> GameState:
+    """生成**无对称**随机地图（R2.1–R2.7 / R7.3，INTERFACES §1.2）。
+
+    前置：
+      * ``1 <= player_count <= config.MAX_PLAYERS``；
+      * ``rng`` 为已播种的 ``random.Random`` 实例（本函数不新建、不调用模块级 random）；
+      * ``size`` 为 ``None`` 时按 R2.3 公式计算（jitter 取自同一个 ``rng``）；
+        显式传入时仅用于测试/回放，必须落在 ``[MIN_SIZE, MAX_SIZE]``。
+    后置：
+      * **无对称**：不存在任何镜像/旋转对称保证（R2.4）；
+      * 恰好 ``player_count`` 名 ``alive=True`` 的玩家，各拥有 1 座 ``Terrain.CAPITAL``、
+        ``owner = pid``、``army = CAPITAL_START_ARMY`` 的首都（R3.2），
+        ``players[pid].capital`` 指向它；
+      * 任意两座首都的**曼哈顿**距离 ``>= CAPITAL_MIN_MANHATTAN``（R2.5）；
+      * 中立城市 ``owner = None``、``army ∈ [40, 50]``（R3.3）；山地 ``owner = None``、``army = 0``；
+      * 其余格子为平原、``owner = None``、``army = 0``；
+      * ``tick = 0``、``ended = False``、``winner = None``；
+      * 同一 ``rng`` 种子两次调用，逐格地形/兵力/归属完全相同（R7.3）。
+    抛出：
+      * :class:`MapGenError` —— 玩家数越界、``size`` 越界，
+        或 ``MAX_ATTEMPTS`` 次换序列重试后仍摆不下满足 R2.5 的首都；
+      * ``AttributeError`` —— ``rng`` 不是 ``random.Random`` 兼容对象。
+    """
+    if not isinstance(player_count, int) or not (
+        1 <= player_count <= config.MAX_PLAYERS
+    ):
+        raise MapGenError(
+            f"玩家数必须在 [1, {config.MAX_PLAYERS}]，收到 {player_count!r}"
+        )
+    if size is None:
+        size = _compute_size(player_count, rng)  # R2.3
+    elif not isinstance(size, int) or not (MIN_SIZE <= size <= MAX_SIZE):
+        raise MapGenError(f"地图尺寸必须在 [{MIN_SIZE}, {MAX_SIZE}]，收到 {size!r}")
+
+    # ---- R2.6：放不下就换随机序列重试，**边长保持不变** --------------------
+    for _attempt in range(MAX_ATTEMPTS):
+        state = _build(player_count, size, rng)
+        if state is not None:
+            return state
+
+    raise MapGenError(
+        f"地图 {size}x{size} 在 {MAX_ATTEMPTS} 次随机重试后仍放不下 "
+        f"{player_count} 座曼哈顿间距 >= {CAPITAL_MIN_MANHATTAN} 的首都（R2.5/R2.6）"
+    )

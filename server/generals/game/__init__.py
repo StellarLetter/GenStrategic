@@ -28,7 +28,16 @@ from .commands import (
     launched_amount,
     pop_chain,
 )
-from .mapgen import MAX_SIZE, MIN_SIZE, DEFAULT_SIZE, MapGenError, generate
+from .mapgen import (
+    MAX_SIZE,
+    MIN_SIZE,
+    DEFAULT_SIZE,
+    CAPITAL_MIN_MANHATTAN,
+    MapGenError,
+    generate,
+    manhattan,
+    size_for_players,
+)
 from .rules import (
     CaptureEvent,
     EliminationEvent,
@@ -45,7 +54,14 @@ from .rules import (
     transfer_to_neutral,
 )
 from .state import GameState, PlayerState, Terrain, Tile, turn_of
-from .tick import TickReport, step
+from .tick import (
+    DROP_SRC_LOST,
+    DROP_ZERO_ARMY,
+    DroppedRequest,
+    TickReport,
+    launch_moves,
+    step,
+)
 from .view import (
     TERRAIN_CITY_FROM_CAPITAL,
     TileView,
@@ -74,6 +90,9 @@ __all__ = [
     # mapgen
     "generate",
     "MapGenError",
+    "manhattan",
+    "size_for_players",
+    "CAPITAL_MIN_MANHATTAN",
     "MIN_SIZE",
     "MAX_SIZE",
     "DEFAULT_SIZE",
@@ -111,6 +130,10 @@ __all__ = [
     "verify_game_over",
     # tick
     "TickReport",
+    "DroppedRequest",
+    "DROP_SRC_LOST",
+    "DROP_ZERO_ARMY",
+    "launch_moves",
     "step",
     # view
     "TileView",
