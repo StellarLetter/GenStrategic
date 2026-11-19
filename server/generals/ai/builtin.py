@@ -10,8 +10,8 @@
 坑（AI_API.md §5）
 ------------------
 1. 视野外 `army is None`，不能做算术；
-2. `terrain == 2` 是**折叠后**的山地外观，可能是真山地也可能是视野外城市（C-17），不能断言；
-3. 调兵链异步：实际兵力 = `min(ceil(army*ratio), army-1)`（C-02 / C-07）；
+2. `terrain == 2` 是**折叠后**的山地外观，可能是真山地也可能是视野外城市（R6.9），不能断言；
+3. 调兵链异步：实际兵力 = `min(ceil(army*ratio), army-1)`（R4.2）；
 4. 不可向山地调兵（R4.9），否则服务端 `reject(code='blocked')`；
 5. 每刻只执行 1 条（R4.7）。
 """
@@ -41,7 +41,7 @@ DIR_DELTAS: Final[dict[str, tuple[int, int]]] = {
     "right": (0, 1),
 }
 
-#: 渲染折叠后的山地地形值（PROTOCOL.md §3.3 / C-17）。AI 侧只能看到它。
+#: 渲染折叠后的山地地形值（PROTOCOL.md §3.3 / R6.9）。AI 侧只能看到它。
 TERRAIN_MOUNTAIN_VISIBLE: Final[int] = 2
 
 
@@ -82,7 +82,7 @@ class Greedy:
     """`greedy`：贪心扩张 —— 先占空地，其次打最弱的邻格（AI_API.md §2 / §4）。
 
     策略（确定性，无随机）：
-    1. 遍历自己的地块（按 index 升序），兵力 `> 1` 的才有意义（否则实际出兵 0，C-02）；
+    1. 遍历自己的地块（按 index 升序），兵力 `> 1` 的才有意义（否则实际出兵 0，R4.2）；
     2. 对每个 4 相邻格：
        - 目标可见（`army is not None`）且 `terrain != 2`（不是山地外观，R4.9）；
        - 目标非己方控制；
@@ -115,7 +115,7 @@ class Greedy:
                     continue  # R4.9：山地不可通行（可见地形判定，客户端视角）
                 if target.army is None:
                     # 视野外目标：本策略不去碰未知格（避免撞上城市/山地的额外消耗）。
-                    # 注意 C-17：`terrain==2` 已在上方排除，这里只剩「视野外平原外观」。
+                    # 注意 R6.9：`terrain==2` 已在上方排除，这里只剩「视野外平原外观」。
                     pass
                 is_empty = target.owner is None and (target.army or 0) == 0
                 # 排序键：(是否空地(0 优先), 目标兵力, 目标index, 方向序)
@@ -171,7 +171,7 @@ class Random:
 
 
 def _ceilmul(army: int, ratio: float) -> int:  # pragma: no cover - 工具函数，供策略参考
-    """`min(ceil(army*ratio), army-1)`（R4.2 / C-02 / C-07）。**不参与决策**，仅便于自测对照。"""
+    """`min(ceil(army*ratio), army-1)`（R4.2）。**不参与决策**，仅便于自测对照。"""
     if army <= 0:
         return 0
     return max(0, min(math.ceil(army * ratio), army - 1))

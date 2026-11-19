@@ -42,7 +42,8 @@ generals/
 ├── AGENT.md                     # 给 Agent/新人的「只看这一份就能上手」总览
 ├── README.md                    # 项目简介、玩法、运行方式
 ├── docs/
-│   ├── RULES.md                 # 规则事实源 + 用户裁决 + 待澄清
+│   ├── RULES.md                 # 规则事实源（唯一权威）
+│   ├── DECISIONS.md             # 规则变更与裁决过程档案（非规则）
 │   ├── PROTOCOL.md              # WebSocket / HTTP 协议，帧格式，错误码
 │   ├── ARCHITECTURE.md          # 本文件
 │   ├── INTERFACES.md            # 各模块黑盒调用契约（含注释级签名）
@@ -54,7 +55,7 @@ generals/
 │   │   ├── config.py            # 常量（刻长、房间上限、地图尺寸…）
 │   │   ├── game/                # ★ 纯游戏内核
 │   │   │   ├── __init__.py      # 公开 API 汇总
-│   │   │   ├── mapgen.py        # 地图生成（对称、可复现，播种由房间号派生）
+│   │   │   ├── mapgen.py        # 地图生成（边长由人数定、无对称、可复现，播种由房间号派生）
 │   │   │   ├── state.py         # GameState / Tile / Player 数据结构 + 查询（视野、面板）
 │   │   │   ├── commands.py      # 玩家指令 → 调兵链操作
 │   │   │   ├── combat.py        # 遭遇战 + 阵地战结算（纯函数）
@@ -140,7 +141,7 @@ Room 内部时钟 (asyncio, 500ms/Tick)；`Room.start()` 后由 `_ensure_clock()
   │       ├ 阶段 3 遭遇战    combat.resolve_encounters
   │       ├ 阶段 4 阵地战    combat.resolve_battles
   │       ├ 阶段 5 更新占领  rules.apply_captures (含王城继承 R5.2)
-  │       └ 阶段 6 停止抵抗  rules.check_eliminations (含投降过渡期 C-08)
+  │       └ 阶段 6 停止抵抗  rules.check_eliminations (含投降过渡期 R5.5)
   │  ③ view.project(state, seat) → 每座位各自的帧
   │  ④ Room 广播：turn / visible-map diff / leaderboard / chat / events
   ▼
@@ -149,7 +150,7 @@ WebSocket 客户端 → client.ts 解帧 → state.ts 应用 → render + ui 重
 
 > **`tick.step()` 的时序**：先 `state.tick += 1`，再用**新的** `(turn, half)` 跑上面六个阶段。
 > 也就是 `report.tick` 是「已进入的刻」。开局 `tick=0` 即 `Turn 0`，第一次 `step()` 落在
-> `tick=1 = Turn 0.`，所以开局首刻就会增长（R3.4 / C-01）。
+> `tick=1 = Turn 0.`，所以开局首刻就会增长（R3.4 / R3.7）。
 >
 > **时钟归属**：`Room.start()` 末尾调 `_ensure_clock()`，有事件循环就 `create_task(self.run())`，
 > 同步场景（单测）静默跳过并由 `step_once()` 手动推进。幂等且可由 `close()` 取消。
@@ -170,10 +171,13 @@ WebSocket 客户端 → client.ts 解帧 → state.ts 应用 → render + ui 重
   （等价于原站存档页 `#gameMap { width/height: size * --cell-size }`），滚轮在 `ZOOM_LEVELS`
   之间切换，拖拽平移，中心被夹在地图内（地图比视口小时自动居中）。
 - **配色**：`render/palette.ts` 定义 8 个玩家色（`red/blue/green/teal/purple/pink/maroon/orange`）
-  + 中立平原 `#dcdcdc` / 山地 `#acacac` / 中立城市 `#808080` / 视野外 `#393939` / 页面底 `#222222`，
-  全部取自截图实测像素。
-- **绘制顺序**：页面底色 → 逐格填充（含网格间隙）→ 地形图标 → 兵量数字 → 调兵链箭头 → 选中白框。
-- **视野外**：一律 `#393939` 填充；只有折叠成山地外观的格子画山形（C-17）；不显示兵量（`army = null`）。
+  + 中立平原 `#dcdcdc` / 山地 `#acacac` / 中立城市 `#808080` / 地图底与视野外 `#393939` /
+  网格线 `#000000` / 页面底 `#222222`，全部取自截图实测像素。
+- **绘制顺序**：地图底色 → 逐格填充 → 地形图标 → 兵量数字 → 调兵链箭头 → 选中白框。
+- **网格线**：视野内的地块先整格铺 `#000000` 再内缩填充，缝隙因此是纯黑网格线；
+  **视野外**整格铺 `#393939`，相邻格子无缝——迷雾是一片连续底色，看不到格子边界。
+- **视野外**：一律 `#393939` 填充；只有折叠成山地外观的格子画山形（R6.9）；不显示兵量（`army = null`）。
+  山形图标一律纯黑、线宽约格子的 2%（视野内画在 `#acacac` 上，视野外几乎隐入迷雾）。
 - **可读性规则**：某格要叠兵量数字时，图标改用半透明深色退成背景纹理（`TILE.iconStrokeDimmed`），
   否则白图标 + 白数字糊在一起——原站城市格的深色线稿 + 白色数字正是这个道理。
 - **选中**：选中地块白框 + 调兵链箭头。
@@ -188,10 +192,10 @@ WebSocket 客户端 → client.ts 解帧 → state.ts 应用 → render + ui 重
 
 | 层 | 位置 | 覆盖 |
 | --- | --- | --- |
-| 内核单测 | `server/tests/test_kernel_*.py` | 规则 `R1..R7` 与裁决 `C-*` 逐条 |
+| 内核单测 | `server/tests/test_kernel_*.py` | 规则 `R1..R7` 逐条 |
 | 网络/AI 单测 | `server/tests/test_net_*.py`、`test_ai_*.py` | 协议编解码、房间时钟、大厅、AI 策略 |
 | 协议级端到端 | `scripts/e2e_smoke.py` | 真起 uvicorn + 真 WS 客户端跑 join/start/tick/move/chat/surrender/观战/HTTP |
-| 浏览器端到端 | `web/scripts/e2e-page.mjs` | 真 Edge 两个页面开局，断言回合计数器、排行榜行数、己方色块与雾色，并截图 |
+| 浏览器端到端 | `web/scripts/e2e-page.mjs` | 真 Edge 两个页面开局，断言画布尺寸、格边长（R2.3）、迷雾底色、网格线、排行榜行数、回合文本与聊天栏首行提示，并截图 |
 
 一键：`.\scripts\test.ps1`。
 

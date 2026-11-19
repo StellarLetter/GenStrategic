@@ -36,7 +36,7 @@ class Row:
     """排行榜一行（AI_API.md §1.1 的 `leaderboard`）。
 
     - `army` = 全部地块兵力之和（R6.8）
-    - `land` = 控制地块数（C-16）
+    - `land` = 控制地块数（R6.8）
     - `alive` = 是否仍在局中（R5.3）
     """
 
@@ -73,7 +73,7 @@ class Observation:
     """AI 每次决策的输入（AI_API.md §1.1）。
 
     字段与文档逐字一致：`turn, half, size, me, tiles, my_army, my_land, leaderboard, chain`。
-    `tiles` 已按视野裁剪：视野外 `army is None`、地形折叠为 0/2（C-17）。
+    `tiles` 已按视野裁剪：视野外 `army is None`、地形折叠为 0/2（R6.9）。
     """
 
     turn: int
@@ -161,9 +161,9 @@ def to_observation(state: GameState, player_id: int) -> Observation:
     前置：`player_id` 是 `state.players` 的键。
     后置：
     - `tiles` **直接来自 `game.view.project(state, player_id)`**（长度 `size²`，下标 == index）；
-    - `my_army = state.army_total(player_id)`（R6.8）、`my_land = state.land_count(player_id)`（C-16）；
+    - `my_army = state.army_total(player_id)`（R6.8）、`my_land = state.land_count(player_id)`（R6.8）；
     - `leaderboard` 按 `player_id` 升序（R7.3）；
-    - `chain` 是该玩家当前的调兵链（服务端权威回显，C-06）。
+    - `chain` 是该玩家当前的调兵链（服务端权威回显，R6.7）。
     抛出：`KeyError` —— `player_id` 不在局中。
     """
     pstate = state.players[player_id]
@@ -186,7 +186,7 @@ def to_observation_for(state: GameState, seat_player: int | None) -> Observation
     """同 `to_observation`，但允许观战者（`seat_player=None`）。
 
     前置：`seat_player is None` 或为局中玩家。
-    后置：`me = -1` 表示观战；`tiles = project(state, None)`（全图真实，P-02）；
+    后置：`me = -1` 表示观战；`tiles = project(state, None)`（全图真实，R3.10）；
           `my_army/my_land` 为 0；`chain` 为空。
     抛出：无。
     """
@@ -207,7 +207,7 @@ def to_observation_for(state: GameState, seat_player: int | None) -> Observation
 
 
 def _leaderboard_rows(state: GameState) -> list[Row]:
-    """按 `player_id` 升序构造排行榜（R7.3 / R6.8 / C-16）。"""
+    """按 `player_id` 升序构造排行榜（R7.3 / R6.8）。"""
     rows: list[Row] = []
     for pid in sorted(state.players):
         pstate = state.players[pid]

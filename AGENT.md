@@ -16,11 +16,13 @@
 
 | 顺序 | 文件 | 内容 |
 | --- | --- | --- |
-| 1 | **`docs/RULES.md`** | **规则唯一事实源**。编号 `R*`、用户裁决 `C-*`、待澄清 `P-*`。改规则必须先改这里。 |
+| 1 | **`docs/RULES.md`** | **规则唯一事实源**。编号 `R<n>.<m>`。改规则必须先改这里。 |
 | 2 | `docs/ARCHITECTURE.md` | 分层、依赖方向、目录树、一个 Tick 的数据流 |
 | 3 | `docs/INTERFACES.md` | 每个模块的黑盒调用契约（签名 + 前后置条件） |
 | 4 | `docs/PROTOCOL.md` | WebSocket / HTTP 帧格式与错误码 |
 | 5 | `docs/AI_API.md` | 比赛策略 AI 的接入接口 |
+
+`docs/DECISIONS.md` 记录规则变更过程与裁决理由，**不是规则**，只在追溯历史时读。
 
 ---
 
@@ -29,7 +31,7 @@
 ```
 generals/
 ├── AGENT.md  README.md
-├── docs/                    # RULES / ARCHITECTURE / INTERFACES / PROTOCOL / AI_API
+├── docs/                    # RULES / ARCHITECTURE / INTERFACES / PROTOCOL / AI_API / DECISIONS
 ├── server/
 │   ├── generals/
 │   │   ├── app.py           # FastAPI 装配点（唯一组装根）
@@ -71,20 +73,23 @@ web (TS, 无框架)  ──WebSocket JSON──►  transport/ ──► net/ �
 
 > `rules.step(state)` 的时序约定：**先把 `state.tick` 自增，再用新的 `(turn, half)` 走六个阶段**。
 > 也就是「`step()` 把状态推进到第 `tick` 刻并结算该刻」，`report.tick` 是**已进入**的刻。
-> 开局 `tick=0` 即 `Turn 0`；第一次 `step()` 落在 `tick=1` = `Turn 0.`，所以开局首刻就会增长（C-01）。
+> 开局 `tick=0` 即 `Turn 0`；第一次 `step()` 落在 `tick=1` = `Turn 0.`，所以开局首刻就会增长（R3.7）。
 
 ---
 
 ## 4. 纪律（硬性）
 
-1. **规则不可猜测**。任何规则空白先写进 `docs/RULES.md` 附录 B 的「待澄清」，向用户确认后再实现。
-   已经裁决的写在附录 A（`C-*`），实现与测试必须引用编号。
-2. **对称一致**（R7.3）：无随机、无时间依赖；所有遍历按 `(owner_id, tile_index)` 排序，禁止依赖 dict 插入序。
+1. **规则不可猜测**。任何规则空白或自相矛盾之处，必须先向用户确认再实现；
+   确认后的结论以最终条文形式写进 `docs/RULES.md`（过程记入 `docs/DECISIONS.md`）。
+   实现与测试必须引用 `R<n>.<m>` 编号。
+2. **一致原则**（R7.3）：无随机、无时间依赖；所有遍历按 `(owner_id, tile_index)` 排序，禁止依赖 dict 插入序。
 3. **高内聚低耦合**：模块只暴露 `__init__.py` 的公开符号；跨层禁止 import 内部实现。
    函数级注释必须写清「前置 / 后置 / 抛出」，达到可直接黑盒调用的程度。
 4. **纯内核**：`server/generals/game/**` 不允许出现 `import fastapi`、`time.time()`、`random.random()`。
 5. **版本控制**：每个逻辑变更一个 commit，提交身份 `cosmos`，不推送远程；同步更新 README。
 6. **视觉基准**：`SaveWeb/generals.io.htm` 与 `SaveWeb/屏幕截图 *.png`，任何样式改动需对照。
+7. **文档只写结果**：所有文档只写当前最终状态，不写"本轮改了/原先是/待澄清"之类过程叙述；
+   变更过程一律记入 `docs/DECISIONS.md`。
 
 ---
 
@@ -132,9 +137,10 @@ cd web && pnpm build               # 产物 web/dist，由后端静态托管
 | 点击调兵（可开关） | 点击选中地块的相邻地块触发一次调兵 | R6.5 |
 | `Q` / `E` | 清空 / 取消最新一条调兵请求 | R6.4 |
 | `Enter` | 聊天 | — |
+| 点击链尾目标后再按方向键 | 预调兵：从目标地块延伸新的请求 | R4.11 |
 
 ---
 
 ## 7. 状态
 
-当前实现进度、已知缺口、待澄清事项统一维护在 `docs/RULES.md` 附录 B 与仓库 README 的「实现进度」一节。
+实现进度与已知缺口见 `README.md` 的「实现状态」一节；规则本身的当前状态即 `docs/RULES.md`。

@@ -62,7 +62,11 @@ ws://<host>:<port>/ws
 
 > 服务端只在**出错**时回 `reject`（附 `code`，§5），不逐条回 `ack`——
 > 前端不需要确认帧也能靠权威 `commands` 回显（§3.6）自我校正。
-> 调兵请求只记录 `(from, dir, ratio)`，**实际兵力在结算时才计算**（C-06）。
+> 调兵请求只记录 `(from, dir, ratio)`，**实际兵力在结算时才计算**（R3 附录、R4.1）。
+>
+> **`from` 不要求是当前控制的地块**：它可以是调兵链里任意请求的目标（**预调兵**，R4.11）。
+> 服务端入队时只校验越界 / 方向 / 山地 / 链长，**起点归属与调兵量留到发起调兵阶段判定**
+> （R4.12）；作废时下发 `chain_dropped` 事件并重发 `commands`。
 
 ### 2.4.1 `ack`（保留帧，默认不发）
 ```json
@@ -84,7 +88,7 @@ ws://<host>:<port>/ws
 ```json
 { "t": "surrender" }
 ```
-进入 40 Tick 过渡期（R5.5 / C-08）。
+进入 40 Tick 过渡期（R5.5）。
 
 ### 2.7 `ping`
 ```json
@@ -128,7 +132,7 @@ ws://<host>:<port>/ws
 | `4` | 首都转化型城市（R5.4，视野内表现同超市） |
 
 > 视野外，服务端把地形折叠为 `0`（可见外观=平原）或 `2`（可见外观=山地）——
-> 即 C-17：城市/山地 → `2`；平原/首都/首都转化型城市 → `0`；`army = null`。
+> 即 R6.9：山地与城市 → `2`；平原/首都/首都转化型城市 → `0`；`army = null`。
 
 ### 3.4 `sight` — 视野集合变化
 ```json
@@ -143,9 +147,9 @@ ws://<host>:<port>/ws
     "alive": true, "surrenderIn": null, "star": 0 }
 ] }
 ```
-`army` = 全部地块兵力之和，`land` = 控制地块数（C-16），均已按 R6.8 对所有人公开。
+`army` = 全部地块兵力之和，`land` = 控制地块数（R6.8），均已对所有人公开。
 `star` 是排行榜首列的「星数」（原站为历史战绩分）。本项目**没有评级系统，恒为 `0`**，
-字段保留只为对齐原站界面（见 RULES 附录 B `P-06`）。
+字段保留只为对齐原站界面（R6.12）。
 
 ### 3.6 `commands` — 权威调兵链回显
 ```json
@@ -158,7 +162,16 @@ ws://<host>:<port>/ws
 ```json
 { "t": "event", "kind": "captured", "turn": 37, "who": "Alice", "target": "Bob" }
 ```
-`kind ∈ { captured, left, surrendered, kicked, game_over }`。
+`kind ∈ { captured, left, surrendered, kicked, game_over, chain_dropped }`。
+
+`chain_dropped`（R4.12 调兵请求作废）**只发给该请求的拥有者**，同时该玩家会立刻收到一份新的 `commands` 全量快照：
+```json
+{ "t": "event", "kind": "chain_dropped", "playerId": 0, "from": 202,
+  "dir": "up", "ratio": 1.0, "reason": "src_lost", "cascade": 2 }
+```
+- `playerId`：请求的拥有者（与 `joined.playerId` 同源）。
+- `reason ∈ { "src_lost", "zero_army" }`：起点已不归自己 / 算出的调兵量 `≤ 0`。
+- `cascade`：级联一并作废的后续请求条数（`0` 表示没有下游依赖）。
 
 ### 3.8 `chat`
 ```json
@@ -182,9 +195,12 @@ ws://<host>:<port>/ws
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/api/rooms` | 房间列表 `[{id, name, players, maxPlayers, state}]` |
-| `GET` | `/api/config` | 客户端启动参数 `{tickMs, maxSize, colors}` |
+| `GET` | `/api/config` | 客户端启动参数 `{tickMs, maxPlayers, minSize, maxSize, colors}` |
+| `GET` | `/healthz` | 存活探针 `{"ok": true}` |
 | `GET` | `/waiting.html` | 房间列表页 |
 | `GET` | `/` | 游戏页 |
+
+> 地图边长不由客户端指定（R2.3）：开局时按玩家数计算，实际值从 `game_start.size` 读取。
 
 ---
 
@@ -196,9 +212,9 @@ ws://<host>:<port>/ws
 | `not_joined` | 尚未 join |
 | `not_started` | 对局未开始 |
 | `not_your_turn` | 已出让（出局/投降过渡期） |
-| `not_owned` | 起点地块不归你控制 |
+| `not_owned` | 起点地块不归你控制（**仅结算阶段判定**，见 §3.7 `chain_dropped`；入队不再返回） |
 | `not_adjacent` | 方向越界或非相邻 |
 | `blocked` | 目标为山地（R4.9） |
-| `chain_full` | 调兵链超过上限（默认 20） |
+| `chain_full` | 调兵链超过上限（R6.11） |
 | `room_full` | 房间已满 |
 | `rate_limited` | 指令过于频繁 |

@@ -94,7 +94,7 @@ def test_register_rejects_empty_name() -> None:
 
 
 def test_neighbours4_corner_has_two_neighbours() -> None:
-    """4 相邻（R4.1 / C-03）：角格只有 2 个邻居。"""
+    """4 相邻（R4.1）：角格只有 2 个邻居。"""
     assert neighbours4(0, 5) == {"down": 5, "right": 1}
 
 
@@ -336,7 +336,7 @@ def test_random_actions_are_legal() -> None:
 
 
 def test_runner_submits_at_most_one_command_per_tick_r4_7() -> None:
-    """R4.7 / C-05：每名玩家每 Tick 只处理 1 条请求 —— runner 也只提交 1 条。"""
+    """R4.7：每名玩家每 Tick 只处理 1 条请求 —— runner 也只提交 1 条。"""
     room, a, b = two_player_room("runner")
     pump(a, b)
     runner = AIRunner(room=room, player_id=a.player_id, agent=make_agent("greedy"))
