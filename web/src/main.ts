@@ -23,6 +23,7 @@ import {
   type ChainState,
 } from './core/chains';
 import { applyFrame, emptyState, type ClientState } from './core/state';
+import { step } from './core/geometry';
 import type { ClientFrame, ServerFrame } from './core/types';
 import { bindKeyboard } from './input/keyboard';
 import { bindPointer } from './input/pointer';
@@ -62,13 +63,19 @@ root.appendChild(page);
 const startButton = document.createElement('button');
 startButton.id = 'start-button';
 startButton.textContent = 'Start';
-startButton.title = '房主开房（P-01：目前为手动开局）';
+startButton.title = '房主开房（R1.4：目前为手动开局）';
 page.appendChild(startButton);
 
 const surrenderButton = document.createElement('button');
 surrenderButton.id = 'surrender-button';
 surrenderButton.textContent = 'Surrender';
 page.appendChild(surrenderButton);
+
+/** 调兵作废提示条（R4.12 `chain_dropped`）。 */
+const toast = document.createElement('div');
+toast.id = 'toast';
+toast.hidden = true;
+page.appendChild(toast);
 void sidePanel;
 
 const turnCounter = new TurnCounter(page);
@@ -83,6 +90,9 @@ let cam: Camera = makeCamera(state.size, 800, 800, 1);
 let clickMove = true;
 /** 开局后待执行「镜头对准自己的首都」。 */
 let pendingRecenter = false;
+/** 已提示过的 `chain_dropped`，避免同一帧重复弹提示。 */
+let shownDrop: ClientState['lastDropped'] = null;
+let toastTimer = 0;
 
 const client = new GameClient(defaultWsUrl());
 
@@ -121,6 +131,39 @@ function draw(): void {
 function syncButtons(): void {
   startButton.hidden = state.started;
   surrenderButton.hidden = !state.started || state.me === null;
+}
+
+/** 显示一条短暂提示（R4.12 调兵作废）。 */
+function showToast(text: string): void {
+  toast.textContent = text;
+  toast.hidden = false;
+  window.clearTimeout(toastTimer);
+  toastTimer = window.setTimeout(() => {
+    toast.hidden = true;
+  }, 2600);
+}
+
+/** `chain_dropped` → 中文提示。 */
+function dropText(drop: NonNullable<ClientState['lastDropped']>): string {
+  const head =
+    drop.reason === 'zero_army'
+      ? '调兵作废：可调兵力为 0（1 兵地块调不动）'
+      : '调兵作废：起点已不归你控制';
+  return drop.cascade > 0 ? `${head}，连带作废 ${drop.cascade} 条` : head;
+}
+
+/**
+ * 权威链刷新后，修正「选中地块」——它必须仍是「自己控制的地块」或「链中某条请求的目标」（R4.11）。
+ * 否则从它继续调兵只会立刻再被作废一次，这里直接取消选中。
+ */
+function pruneSelection(): void {
+  const selected = chain.selected;
+  if (selected === null || state.me === null) return;
+  const owned = state.tiles[selected]?.owner === state.me;
+  const isChainTarget = chain.chain.some(
+    (req) => step(req.from, req.dir, cam.size) === selected,
+  );
+  if (!owned && !isChainTarget) chain = { ...chain, selected: null };
 }
 
 // ------------------------------------------------------------ 输入
@@ -225,8 +268,15 @@ client.onFrame = (frame: ServerFrame) => {
     // 开局后第一次收到视野增量时，把镜头对到自己的首都（R6.1）。
     if (centerOnMe()) pendingRecenter = false;
   }
-  if (state.chain.length !== chain.chain.length) {
+  if (frame.t === 'commands') {
+    // 服务端 `commands` 是权威快照（R6.3）。作废后链会变短，必须整份覆盖，
+    // 只比长度会漏掉「同长度但内容变了」的情况。
     chain = { ...chain, chain: state.chain };
+    pruneSelection();
+  }
+  if (state.lastDropped && state.lastDropped !== shownDrop) {
+    shownDrop = state.lastDropped;
+    showToast(dropText(state.lastDropped));
   }
   if (isStart && state.me !== null) pendingRecenter = true;
   draw();
@@ -365,7 +415,7 @@ function buildDemo(size: number, seed: number): DemoTile[] {
     }
   }
   for (const idx of visible) tiles[idx]!.seen = true;
-  // 视野外：兵量与归属不可见，地形折叠为山地/平原（R3.6 / C-17）
+  // 视野外：兵量与归属不可见，地形折叠为山地/平原（R3.6 / R6.9）
   for (let i = 0; i < tiles.length; i += 1) {
     const t = tiles[i]!;
     if (visible.has(i)) continue;
@@ -407,9 +457,10 @@ function loadDemo(): void {
       { playerId: 7, name: 'WeYoung', color: 'maroon', army: 0, land: 0, alive: false, surrenderIn: null, star: 33 },
     ],
     chat: [
-      { turn: -1, name: '', color: 'red', text: 'Chat is being recorded.', system: true },
-      { turn: 37, name: '', color: 'red', text: 'Timelink captured aaa!.', system: true },
-      { turn: 39, name: '', color: 'green', text: 'aaa! left.', system: true },
+      { turn: 30, name: 'Timelink', color: 'pink', text: 'Timelink captured aaa!.', system: true, kind: 'captured', target: 'aaa!', targetColor: 'green' },
+      { turn: 32, name: 'aaa!', color: 'green', text: 'aaa! left.', system: true, kind: 'left' },
+      { turn: 44, name: 'kezr', color: 'blue', text: 'kezr surrendered.', system: true, kind: 'surrendered' },
+      { turn: 46, name: 'You', color: 'red', text: 'You captured kezr.', system: true, kind: 'captured', target: 'kezr', targetColor: 'blue' },
     ],
     tiles: demoTiles.map((t) => ({ ...t })),
   };

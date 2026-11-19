@@ -45,6 +45,15 @@ export interface ClientState {
   winner: number | null;
   /** 上一次 reject 的错误码，用于 UI 闪一下。 */
   lastError: string | null;
+  /** 最近一条 `chain_dropped` 提示（R4.12），UI 显示后由 main 清空。 */
+  lastDropped: DroppedNotice | null;
+}
+
+/** 一条「调兵请求作废」提示（PROTOCOL §3.7 `chain_dropped`）。 */
+export interface DroppedNotice {
+  reason: 'src_lost' | 'zero_army';
+  from: number;
+  cascade: number;
 }
 
 export function emptyState(size = 20): ClientState {
@@ -68,6 +77,7 @@ export function emptyState(size = 20): ClientState {
     over: false,
     winner: null,
     lastError: null,
+    lastDropped: null,
   };
 }
 
@@ -109,7 +119,7 @@ export function applyFrame(state: ClientState, frame: ServerFrame): ClientState 
       let sight: Set<number> | null = null;
       for (const [index, army, owner, terrain] of frame.list) {
         if (index < 0 || index >= tiles.length) continue;
-        // `army === null` 即服务端判定该地块在本方视野外（PROTOCOL §3.3 / RULES C-17）。
+        // `army === null` 即服务端判定该地块在本方视野外（PROTOCOL §3.3 / RULES R6.9）。
         const seen = army !== null;
         tiles[index] = { army, owner, terrain, seen };
         if (seen) {
@@ -136,6 +146,9 @@ export function applyFrame(state: ClientState, frame: ServerFrame): ClientState 
         color: frame.color,
         text: frame.text,
         system: frame.system,
+        kind: frame.kind,
+        target: frame.target,
+        targetColor: frame.targetColor,
       };
       const chat = [...state.chat, line];
       if (chat.length > MAX_CHAT) chat.splice(0, chat.length - MAX_CHAT);
@@ -143,6 +156,20 @@ export function applyFrame(state: ClientState, frame: ServerFrame): ClientState 
     }
     case 'game_over':
       return { ...state, over: true, winner: frame.winner, turn: frame.turn };
+    case 'event':
+      // 只有 chain_dropped 是「发给我一个人」的信息（PROTOCOL §3.7）；
+      // 其余 event（surrendered / captured / left）的文字播报走 `chat` 帧（R6.10）。
+      if (frame.kind === 'chain_dropped') {
+        return {
+          ...state,
+          lastDropped: {
+            reason: frame.reason ?? 'src_lost',
+            from: frame.from ?? -1,
+            cascade: frame.cascade ?? 0,
+          },
+        };
+      }
+      return state;
     case 'reject':
       return { ...state, lastError: frame.code };
     default:

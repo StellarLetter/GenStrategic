@@ -18,7 +18,7 @@ export type ColorName =
 /**
  * 客户端可见地形。与 PROTOCOL §3.3 一致：
  * 0 平原 / 1 首都 / 2 山地 / 3 超市 / 4 首都转化型城市。
- * 视野外由服务端折叠为 0 或 2（RULES C-17）。
+ * 视野外由服务端折叠为 0 或 2（RULES R6.9）。
  */
 export type TerrainCode = 0 | 1 | 2 | 3 | 4;
 
@@ -62,7 +62,15 @@ export interface ChatLine {
   color: ColorName;
   text: string;
   system: boolean;
+  /** 系统消息种类（R6.10）；缺省 = 无结构化的纯文本提示。 */
+  kind?: SystemChatKind;
+  /** `captured` 专用：被攻占者的名字与颜色（用于第二个色块）。 */
+  target?: string;
+  targetColor?: ColorName;
 }
+
+/** 只会有这三种系统播报（R6.10）。 */
+export type SystemChatKind = 'captured' | 'left' | 'surrendered';
 
 // ---------------------------------------------------------------- 下行帧
 
@@ -104,7 +112,8 @@ export type EventKind =
   | 'left'
   | 'surrendered'
   | 'kicked'
-  | 'game_over';
+  | 'game_over'
+  | 'chain_dropped';
 
 export interface FrameEvent {
   t: 'event';
@@ -112,6 +121,16 @@ export interface FrameEvent {
   turn: number;
   who?: string;
   target?: string;
+  /** `chain_dropped` 专用：请求的拥有者。 */
+  playerId?: number;
+  /** `chain_dropped` 专用：作废原因。 */
+  reason?: 'src_lost' | 'zero_army';
+  /** `chain_dropped` 专用：被作废的请求。 */
+  from?: number;
+  dir?: Dir;
+  ratio?: number;
+  /** `chain_dropped` 专用：级联一并作废的条数。 */
+  cascade?: number;
 }
 
 export interface FrameChat {
@@ -121,6 +140,9 @@ export interface FrameChat {
   color: ColorName;
   text: string;
   system: boolean;
+  kind?: SystemChatKind;
+  target?: string;
+  targetColor?: ColorName;
 }
 
 export interface FrameGameOver {

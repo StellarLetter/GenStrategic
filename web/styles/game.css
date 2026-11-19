@@ -235,21 +235,26 @@
 }
 
 .chat-message .turn {
-  margin-left: 1px;
+  margin-left: 7px;
   font-weight: 700;
   color: #ffffff;
 }
 
+/* 原站每行左侧的浅灰竖条（视觉基准 190745.png）。 */
 .announcement-spacer {
   display: inline-block;
-  width: 2px;
+  width: 3px;
+  height: 1em;
+  margin-right: 6px;
+  vertical-align: -0.16em;
+  background: rgba(255, 255, 255, 0.5);
 }
 
 .inline-color-block {
   display: inline-block;
-  width: 12px;
-  height: 12px;
-  margin: 0 2px;
+  width: 13px;
+  height: 13px;
+  margin: 0 4px;
   vertical-align: middle;
 }
 
@@ -270,4 +275,26 @@
 
 #chatroom-input::placeholder {
   color: #777777;
+}
+
+/* ---------------------------------------------------------- 提示条（R4.12 chain_dropped） */
+
+#toast {
+  position: absolute;
+  bottom: 96px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 9px 18px;
+  font-size: 14px;
+  font-weight: 700;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.82);
+  border-left: 4px solid var(--accent);
+  z-index: 30;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+#toast[hidden] {
+  display: none;
 }
