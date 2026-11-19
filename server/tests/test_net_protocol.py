@@ -317,7 +317,7 @@ def test_encode_commands_matches_protocol_3_6() -> None:
 
 
 def test_encode_event_matches_protocol_3_7() -> None:
-    """PROTOCOL.md §3.7：`kind ∈ {captured,left,surrendered,kicked,game_over}`。"""
+    """PROTOCOL.md §3.7：`kind ∈ {captured,left,surrendered,kicked,game_over,chain_dropped}`。"""
     assert protocol.encode_event("captured", 37, who="Alice", target="Bob") == {
         "t": "event",
         "kind": "captured",
@@ -330,8 +330,58 @@ def test_encode_event_matches_protocol_3_7() -> None:
 
 
 @pytest.mark.parametrize("kind", sorted(protocol.EVENT_KINDS))
-def test_encode_event_accepts_every_documented_kind(kind: str) -> None:
-    assert protocol.encode_event(kind, 1)["kind"] == kind
+def test_every_documented_event_kind_has_an_encoder(kind: str) -> None:
+    """PROTOCOL.md §3.7 列出的每种 `kind` 都必须有编码器，且产出 `{"t": "event", "kind": ...}`。
+
+    `chain_dropped` 的字段结构与其它五种不同（`playerId/from/dir/ratio/reason/cascade`），
+    因此走专用编码器；其余走通用 `encode_event`。
+    """
+    if kind == "chain_dropped":
+        frame = protocol.encode_chain_dropped(
+            player_id=0, src=202, direction="up", ratio=1.0, reason="src_lost", cascade=2
+        )
+    else:
+        frame = protocol.encode_event(kind, 1)
+    assert frame["t"] == "event"
+    assert frame["kind"] == kind
+
+
+def test_encode_chain_dropped_matches_protocol_3_7() -> None:
+    """PROTOCOL.md §3.7：`chain_dropped` 只发本人，字段为 playerId/from/dir/ratio/reason/cascade。"""
+    assert protocol.encode_chain_dropped(
+        player_id=0, src=202, direction="up", ratio=1.0, reason="src_lost", cascade=2
+    ) == {
+        "t": "event",
+        "kind": "chain_dropped",
+        "playerId": 0,
+        "from": 202,
+        "dir": "up",
+        "ratio": 1.0,
+        "reason": "src_lost",
+        "cascade": 2,
+    }
+    assert protocol.encode_chain_dropped(
+        player_id=3, src=7, direction="left", ratio=0.5, reason="zero_army"
+    )["cascade"] == 0
+
+
+def test_encode_event_refuses_chain_dropped_shape() -> None:
+    """`chain_dropped` 不能用通用 `encode_event`（字段结构不同），否则前端会解构出 undefined。"""
+    with pytest.raises(ValueError):
+        protocol.encode_event("chain_dropped", 1)
+
+
+def test_event_kinds_cover_protocol_3_7_at_least() -> None:
+    """§3.7 的六种 kind 全在 `EVENT_KINDS` 里（含 R4.12 新增的 `chain_dropped`）。"""
+    documented = {
+        "captured",
+        "left",
+        "surrendered",
+        "kicked",
+        "game_over",
+        "chain_dropped",
+    }
+    assert documented <= set(protocol.EVENT_KINDS)
 
 
 def test_encode_chat_matches_protocol_3_8() -> None:
@@ -344,6 +394,60 @@ def test_encode_chat_matches_protocol_3_8() -> None:
         "text": "gg",
         "system": False,
     }
+
+
+def test_encode_chat_system_kind_fields_match_types_contract() -> None:
+    """系统播报带 `kind`/`target`/`targetColor`，字段顺序与 `types.ts::FrameChat` 一致。"""
+    captured = protocol.encode_chat(
+        30,
+        "abaaabaa",
+        "orange",
+        "abaaabaa captured AA111.",
+        system=True,
+        kind="captured",
+        target="AA111",
+        target_color="purple",
+    )
+    assert list(captured) == [
+        "t",
+        "turn",
+        "name",
+        "color",
+        "text",
+        "system",
+        "kind",
+        "target",
+        "targetColor",
+    ]
+    assert captured == {
+        "t": "chat",
+        "turn": 30,
+        "name": "abaaabaa",
+        "color": "orange",
+        "text": "abaaabaa captured AA111.",
+        "system": True,
+        "kind": "captured",
+        "target": "AA111",
+        "targetColor": "purple",
+    }
+    # surrendered / left 没有 target/targetColor
+    for kind, text in (("surrendered", "Bob surrendered."), ("left", "Bob left.")):
+        frame = protocol.encode_chat(30, "Bob", "blue", text, system=True, kind=kind)
+        assert frame["kind"] == kind
+        assert "target" not in frame and "targetColor" not in frame
+        assert list(frame) == ["t", "turn", "name", "color", "text", "system", "kind"]
+
+
+def test_system_chat_kinds_are_exactly_the_three_r6_10_kinds() -> None:
+    """R6.10：系统聊天 `kind` 只有三种，且与 `EVENT_KINDS` 的对应项同名。"""
+    assert set(protocol.SYSTEM_CHAT_KINDS) == {"surrendered", "captured", "left"}
+    assert set(protocol.SYSTEM_CHAT_KINDS) <= set(protocol.EVENT_KINDS)
+
+
+def test_encode_chat_rejects_unknown_system_kind() -> None:
+    """`joined` 之类不属于 R6.10 的 kind 必须直接报错，避免悄悄发到聊天栏。"""
+    with pytest.raises(ValueError):
+        protocol.encode_chat(1, "x", "red", "x joined.", system=True, kind="joined")
 
 
 def test_encode_game_over_matches_protocol_3_9() -> None:

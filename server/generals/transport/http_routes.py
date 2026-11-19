@@ -41,7 +41,8 @@ async def get_config() -> JSONResponse:
     """客户端启动参数（PROTOCOL.md §4）。
 
     前置：无。
-    后置：`{tickMs, maxSize, minSize, defaultSize, maxPlayers, colors}`。
+    后置：`{tickMs, maxSize, minSize, maxPlayers, colors}`。
+          地图边长不在此处（R2.3：由开局玩家数决定，实际值从 `game_start.size` 读取）。
     抛出：无。
     """
     cfg = DEFAULT_CONFIG
@@ -50,7 +51,6 @@ async def get_config() -> JSONResponse:
             "tickMs": cfg.tick_ms,
             "maxSize": cfg.max_size,
             "minSize": cfg.min_size,
-            "defaultSize": cfg.default_size,
             "maxPlayers": cfg.max_players,
             "colors": list(COLORS),
         }

@@ -65,7 +65,7 @@ def test_room_full_raises_protocol_error() -> None:
 
 
 def test_spectator_can_join_full_room() -> None:
-    """观战者不占玩家座，房间满员也能进（P-02）。"""
+    """观战者不占玩家座，房间满员也能进（R3.10）。"""
     lobby = Lobby(GameConfig(max_players=1))
     room, _ = lobby.join("A", "solo", False, conn=FakeConn())
     _room, seat = lobby.join("Watcher", "solo", True, conn=FakeConn())

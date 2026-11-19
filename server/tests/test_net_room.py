@@ -2,8 +2,8 @@
 
 覆盖点（BRIEF 成员 B「测试要求」）：
 - 起 2 个假连接，跑 50 Tick，断言帧序列合法（PHASE_1）；
-- 只发**视野内**地块（PHASE_3 / C-17）；
-- `leaderboard` 数值与内核一致（R6.8 / C-16）；
+- 只发**视野内**地块（PHASE_3 / R3.5 / R3.6）；
+- `leaderboard` 数值与内核一致（R6.8）；
 - `tiles` 增量语义：不变不发、变化才发、视野新入必须补发。
 """
 
@@ -14,6 +14,7 @@ import json
 import pytest
 
 from conftest import FakeConn, frame_kinds, frames_of_kind, make_room, pump, two_player_room
+from generals.config import DEFAULT_CONFIG
 from generals.game import turn_of
 from generals.net import QUEUE_MAXSIZE, Room, RoomState, protocol
 
@@ -45,7 +46,7 @@ def test_add_sends_joined_first_and_assigns_player_ids() -> None:
 
 
 def test_spectator_gets_no_player_id() -> None:
-    """观战者不占玩家座、无内核 id（`project(state, None)`，P-02）。"""
+    """观战者不占玩家座、无内核 id（`project(state, None)`，R3.10）。"""
     room = make_room("spec")
     room.add(FakeConn(), "Alice")
     spec = room.add(FakeConn(), "Watcher", spectate=True)
@@ -98,6 +99,55 @@ def test_first_tile_frame_is_full_snapshot() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 地图边长（R2.3：由玩家数决定，不由房间/客户端指定）
+# ---------------------------------------------------------------------------
+
+
+def test_size_is_unknown_before_start_r2_3() -> None:
+    """未开局且未显式传 `size` 时，`room.size` 为 `None`（边长要在开局时才算得出）。
+
+    刻意**不**回退到 `config.default_size`：协议里客户端应读 `game_start.size`，
+    给一个假的默认值只会诱使调用方误用。
+    """
+    room = Room("size-unknown", config=DEFAULT_CONFIG)
+    room.add(FakeConn(), "Alice")
+    assert room.size is None
+    assert room.phase is RoomState.WAITING
+
+
+def test_size_after_start_comes_from_kernel_r2_3() -> None:
+    """开局后 `room.size` 就是内核算出的 `state.size`；`game_start.size` 与之一致。"""
+    room = Room("size-derived", config=DEFAULT_CONFIG, seed=20261118)
+    room.add(FakeConn(), "Alice")
+    room.add(FakeConn(), "Bob")
+    room.start()
+    assert room.size is not None
+    assert room.size == room.state.size
+    assert 10 <= room.size <= 40, "R2.3：边长夹在 [10, 40]"
+
+
+def test_size_override_is_test_only_r2_3() -> None:
+    """显式传 `size=` 只作为测试加速手段：覆盖生效，且未开局就能读到该值。"""
+    room = make_room("size-override")  # conftest 里显式传了 size=12
+    room.add(FakeConn(), "Alice")
+    assert room.size == 12
+    room.add(FakeConn(), "Bob")
+    room.start()
+    assert room.state.size == 12
+
+
+def test_game_start_size_is_state_size_not_override_r2_3() -> None:
+    """`game_start.size` 一律取 `state.size`（不是 `room.size` 属性、也不是 config 默认值）。"""
+    room = make_room("gs-size")
+    room.add(FakeConn(), "Alice")
+    room.add(FakeConn(), "Bob")
+    seat = room.add(FakeConn(), "Watcher", spectate=True)
+    room.start()
+    frame = frames_of_kind([(seat, f) for f in seat.drain_nowait()], "game_start")[0]
+    assert frame["size"] == room.state.size
+
+
+# ---------------------------------------------------------------------------
 # 50 Tick 主流程
 # ---------------------------------------------------------------------------
 
@@ -139,7 +189,7 @@ def test_turn_half_alternates_r1_2() -> None:
 
 
 def test_leaderboard_matches_kernel_numbers() -> None:
-    """R6.8 / C-16：`army` = 全地块兵力之和，`land` = 控制地块数。"""
+    """R6.8：`army` = 全地块兵力之和，`land` = 控制地块数。"""
     room, a, b = two_player_room("lb")
     pump(a, b)
     for _ in range(30):
@@ -158,7 +208,7 @@ def test_leaderboard_matches_kernel_numbers() -> None:
 
 
 def test_only_tiles_within_sight_are_sent_incrementally() -> None:
-    """C-17 / R3.5：增量 `tiles` 帧里的地块**必须**在发送者当前视野内。"""
+    """R3.5：增量 `tiles` 帧里的地块**必须**在发送者当前视野内。"""
     room, a, b = two_player_room("sight")
     seen: set[int] = set()
     for frame in pump(a, b):
@@ -193,7 +243,7 @@ def test_incremental_frames_are_actually_incremental() -> None:
 
 
 def test_fogged_tiles_have_null_army_and_folded_terrain() -> None:
-    """C-17：视野外 `army=null`，地形折叠为 0（平原外观）或 2（山地外观）。"""
+    """R3.6 / R6.9：视野外 `army=null`，地形折叠为 0（平原外观）或 2（山地外观）。"""
     room, a, b = two_player_room("fog")
     full = frames_of_kind(pump(a, b), "tiles")[0]["list"]
     sight = set(room.state.visible_tiles(a.player_id))
@@ -215,7 +265,7 @@ def test_two_seats_get_independent_fog() -> None:
 
 
 def test_spectator_sees_whole_map() -> None:
-    """P-02：观战者全图真实信息（`army` 全非空）。"""
+    """R3.10：观战者全图真实信息（`army` 全非空）。"""
     room = make_room("watch")
     room.add(FakeConn(), "Alice")
     watcher = room.add(FakeConn(), "Watcher", spectate=True)
@@ -263,20 +313,25 @@ def test_move_command_is_silent_then_echoed_in_chain_r6_3() -> None:
     assert len(room.state.players[a.player_id].chain) == 1
 
 
-def test_move_on_foreign_tile_is_rejected_not_owned() -> None:
-    """R4.1 前置校验：起点不归你 → `reject(code='not_owned')`（PROTOCOL.md §5）。"""
-    room, a, b = two_player_room("reject")
+def test_move_from_foreign_tile_is_accepted_then_dropped_r4_11_r4_12() -> None:
+    """R4.11 / R4.12：入队**不**校验起点归属（预调兵），作废推迟到发起调兵阶段。
+
+    起点是别人的地块时：`move` 照常入队（不产生 `not_owned` reject，PROTOCOL §5 已注明
+    入队不再返回该码），而是等到下一个结算刻由内核按 R4.12 作废，并下发
+    `chain_dropped(reason="src_lost")` + 新的 `commands` 快照。
+    """
+    room, a, b = two_player_room("premove")
     pump(a, b)
-    enemy_tile = next(
-        idx for idx in sorted(room.state.tiles) if False
-    ) if False else None
     other = b.player_id
     foreign = next(i for i, t in enumerate(room.state.tiles) if t.owner == other)
-    room.handle(a, {"t": "commands", "cmds": [{"op": "move", "from": foreign, "dir": "up", "ratio": 1.0}]})
-    rejects = frames_of_kind([(s, f) for s, f in pump(a, b) if s is a], "reject")
-    assert rejects and rejects[0]["code"] == "not_owned"
-    assert rejects[0]["op"] == "move"
-    del enemy_tile
+    room.handle(
+        a,
+        {"t": "commands", "cmds": [{"op": "move", "from": foreign, "dir": "up", "ratio": 1.0}]},
+    )
+    mine = [f for s, f in pump(a, b) if s is a]
+    assert not any(f["t"] == "reject" for f in mine), "入队阶段不应产生 not_owned reject"
+    assert any(f["t"] == "commands" for f in mine), "预调兵应照常回显权威链"
+    assert len(room.state.players[a.player_id].chain) == 1
 
 
 def test_move_toward_mountain_is_rejected_blocked_r4_9() -> None:
@@ -317,7 +372,7 @@ def test_commands_before_start_are_rejected_not_started() -> None:
 
 
 def test_spectator_commands_are_rejected() -> None:
-    """观战者不能操作（P-02：观战者只有视野）。"""
+    """观战者不能操作（R3.10：观战者只有视野）。"""
     room = make_room("spec-cmd")
     room.add(FakeConn(), "Alice")
     watcher = room.add(FakeConn(), "Watcher", spectate=True)
@@ -392,12 +447,12 @@ def test_unknown_frame_type_is_ignored() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 投降 / 断线（R5.5 / C-08）
+# 投降 / 断线（R5.5）
 # ---------------------------------------------------------------------------
 
 
 def test_surrender_starts_40_tick_transition_c08() -> None:
-    """R5.5 / C-08：投降进入 40 Tick 过渡期，期间不能操作但地块仍属本人。"""
+    """R5.5：投降进入 40 Tick 过渡期，期间不能操作但地块仍属本人。"""
     room, a, b = two_player_room("surrender")
     pump(a, b)
     room.handle(a, {"t": "surrender"})
@@ -406,14 +461,14 @@ def test_surrender_starts_40_tick_transition_c08() -> None:
     assert events and events[0]["kind"] == "surrendered"
     pstate = room.state.players[a.player_id]
     assert pstate.surrender_ticks_left == 40
-    assert pstate.alive is True  # 过渡期内仍 alive（C-08）
+    assert pstate.alive is True  # 过渡期内仍 alive（R5.5）
     assert pstate.land_count_ok if False else True
     # 过渡期内不可操作（内核 `can_operate()`）
     assert pstate.can_operate() is False
 
 
 def test_surrender_clears_chain_immediately_c08() -> None:
-    """C-08：投降瞬间清空调兵链。"""
+    """R5.5：投降瞬间清空调兵链。"""
     room, a, b = two_player_room("surrender-chain")
     pump(a, b)
     src = _own_tile(room, a.player_id)
@@ -438,7 +493,7 @@ def test_surrendered_player_commands_are_rejected_not_your_turn() -> None:
 
 
 def test_leave_broadcasts_left_event_p03() -> None:
-    """P-03：离开会广播 `left` 系统消息。"""
+    """R6.10：离开会广播 `left` 系统消息。"""
     room, a, b = two_player_room("leave")
     pump(a, b)
     room.remove(a)
@@ -448,12 +503,12 @@ def test_leave_broadcasts_left_event_p03() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 结束（R7.4 / C-12）
+# 结束（R7.4）
 # ---------------------------------------------------------------------------
 
 
 def test_game_over_frames_when_only_one_player_has_land_r7_4() -> None:
-    """R7.4 / C-12：只剩一名有地玩家时立即结束，广播 `game_over`。"""
+    """R7.4：只剩一名有地玩家时立即结束，广播 `game_over`。"""
     room, a, b = two_player_room("over")
     pump(a, b)
     # 直接把 B 的地盘并入 A，构造「只剩一人有地」的终局条件。

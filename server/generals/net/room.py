@@ -6,7 +6,7 @@
 ----------------------------------------------------
 - 本模块**不操作地块数组**，一切状态变更只通过 `generals.game` 的公开 API 完成：
   `commands.enqueue_move / clear_chain / pop_chain`、`tick.step`、`view.project`。
-- **视野裁剪一律调 `game.view.project`**（C-17 / R3.5 / R6.9），本模块不重复实现裁剪逻辑。
+- **视野裁剪一律调 `game.view.project`**（R3.5 / R3.6 / R6.9），本模块不重复实现裁剪逻辑。
 - 本模块只做「座位 → 玩家」的映射、指令校验 + `ack`/`reject`，以及把内核报告转成每个座位各自的帧。
 
 并发模型
@@ -62,10 +62,7 @@ STAR_COUNT: Final[int] = 0
 
 
 def _star_of(pstate: Any) -> int:
-    """取某玩家的星数。前置：无。后置：**恒返回 0**（见 `STAR_COUNT` 说明）。抛出：无。
-
-    # TODO(P-05 待澄清): 星数=历史战绩分，本项目暂无评级系统。
-    """
+    """取某玩家的星数。前置：无。后置：**恒返回 0**（R6.12：本项目无评级系统）。抛出：无。"""
     return STAR_COUNT
 
 
@@ -108,7 +105,7 @@ class Seat:
     - `last_sight` —— 上一次可见地块集合（`GameState.visible_tiles`；观战者为全图）。
     - `chain_sig` —— 上一次下发的调兵链签名，避免每刻重复广播 `commands` 帧。
     - `closed` —— 传输层已断开，Room 不再向它写帧。
-    - `kicked` —— 因慢客户端/异常被移出房间（P-03 语义下会广播 `left` 系统消息）。
+    - `kicked` —— 因慢客户端/异常被移出房间（R6.10 语义下会广播 `left` 系统消息）。
     """
 
     room_id: str
@@ -197,16 +194,16 @@ class Room:
     契约见 `docs/INTERFACES.md` §2.2。
 
     前置（构造）：
-    - `config` 提供 `tick_ms`/`max_players`/`default_size`/`min_size`/`max_size` 等常量；
+    - `config` 提供 `tick_ms`/`max_players`/`min_size`/`max_size` 等常量；
       缺省用 `generals.config.DEFAULT_CONFIG`。
     - `room_id` 必须唯一（由 `net.lobby.Lobby` 保证）。
+    - `size` **仅测试用**：显式传入时覆盖地图边长（让测试地图小、跑得快）。
+      生产路径不传，边长按 R2.3 由玩家数与地图种子在 `start()` 时算出。
     后置：
     - `state is None` 表示等待阶段；`start()` 之后 `state` 为内核 `GameState`。
     - `seats` 按加入顺序保存；遍历时用 `_seats_sorted()` 保证 `(seat 序号)` 确定性（R7.3）。
-    抛出：构造本身不抛（尺寸非法在 `start()` 时被钳制到 `[min_size, max_size]`）。
+    抛出：构造本身不抛。
     """
-
-    _DEFAULT_SIZE_FALLBACK: Final[int] = 20
 
     def __init__(
         self,
@@ -225,14 +222,16 @@ class Room:
         self._size_override: int | None = size
         self._next_seq: int = 0
         self._next_player_id: int = 0
-        # TODO(P-01)：准备阶段时长/开局触发条件未裁决；当前实现为「房主手动 start」，
-        #   不设自动倒计时（BRIEF 成员 B §2「超时 600 Tick 无操作」同样留 TODO）。
+        # R1.4：开局只由房主的 `start` 帧触发，不设自动倒计时。
         self._loop_task: asyncio.Task | None = None
         self._closed: bool = False
         self._sight_all: set[int] | None = None  # 观战者/全图缓存
         #: 聊天/系统消息历史（供中途加入者补齐，`Room.add` 会补发）。
         #: 元素就是完整的 `chat` 帧（`system=False` 为真人聊天，`True` 为系统消息）。
         self.chat_log: list[dict] = []
+        #: 已播报过 `"<name> left."` 的对象键（R6.10：同一个人只播一次）。
+        #: 键为 `("p", player_id)`（玩家）或 `("s", seat_seq)`（无 player_id 的座位）。
+        self._left_announced: set[tuple[str, int]] = set()
 
     # ------------------------------------------------------------------
     # 构造期查询
@@ -248,14 +247,24 @@ class Room:
         return int(getattr(self.config, "tick_ms", 500))
 
     @property
-    def size(self) -> int:
-        """本房间地图边长（未开局时由 config 推导）。"""
+    def size(self) -> int | None:
+        """本房间地图边长；**未开局时为 `None`**（R2.3）。
+
+        前置：无。
+        后置：
+        - 已开局 → `state.size`（权威值；`game_start.size` 也取自它）；
+        - 未开局 → 只有构造时显式传了 `size=`（**仅测试用**）才返回该值，否则 `None`。
+
+        为什么不是 `config.default_size`：R2.3 规定边长由**开局玩家数与地图种子**算出，
+        房间与客户端都不指定；开局前根本无从得知，返回一个假的默认值只会诱使调用方
+        （如 `game_start`）误用它。协议里的边长一律读 `game_start.size`。
+        抛出：无。
+        """
         if self.state is not None:
             return int(self.state.size)
-        raw = self._size_override
-        if raw is None:
-            raw = int(getattr(self.config, "default_size", self._DEFAULT_SIZE_FALLBACK))
-        return self._clamp_size(int(raw))
+        if self._size_override is None:
+            return None
+        return self._clamp_size(int(self._size_override))
 
     @property
     def player_seats(self) -> list[Seat]:
@@ -345,8 +354,7 @@ class Room:
             except AttributeError:
                 pass
 
-        # `joined.playerId`：观战者没有内核 id，沿用 `-1`（PROTOCOL 未定义观战者取值）。
-        # TODO(P-06 待澄清): 观战者的 playerId 语义。当前取 -1，前端应以 spectate 行为准。
+        # `joined.playerId`：观战者没有内核 id，取 `-1`（R6.13），前端把负数视为观战。
         self._send(
             seat,
             protocol.encode_joined(
@@ -373,15 +381,14 @@ class Room:
         return protocol.COLORS[seq % len(protocol.COLORS)]
 
     def remove(self, seat: Seat, *, kicked: bool = False) -> None:
-        """把座位移出房间，并广播 `left` 系统事件（P-03）。
+        """把座位移出房间，并广播 `left` 事件（R6.10 三种系统消息之一）。
 
         前置：`seat` 可能仍在 `seats` 中，也可能已被移除。
         后置：
         - 从 `seats` 摘除；置 `kicked`；
-        - 广播 `event(kind="left")`；若对局中该玩家仍有领地，按 R5.5 走投降流程
-          ——但**投降过渡期由内核 `check_eliminations` 处理**，net 层只发指令而不是直接改状态：
-          调用 `_surrender_for_disconnect(seat)`（设置 `surrender_ticks_left` 的入口由内核提供，
-          见交付说明中的「依赖符号」）。
+        - 若该玩家还没被播报过 `left`：广播 `event(kind="left")` + 系统消息 `"<name> left."`；
+          已播报过（例如先被结算判定出局、再关页面）则**不重复播**（R6.10 只播三种，不刷屏）；
+        - 若对局中该玩家仍有领地，先按 R5.5 进入投降过渡期（`_surrender_for_disconnect`）。
         抛出：无。
         """
         if seat in self.seats:
@@ -391,14 +398,10 @@ class Room:
         if self.state is not None and seat.player_id is not None:
             self._surrender_for_disconnect(seat)
         turn, _half = turn_of(self.state.tick) if self.state is not None else (0, 0)
-        self.broadcast(
-            protocol.encode_event("left", turn, who=seat.name, target=None)
-        )
-        # 系统消息格式对齐原站：「<A> left.」
-        self._system_chat(turn, f"{seat.name} left.")
+        self._announce_left(_left_key(seat), seat.name, seat.color, turn)
 
     def _surrender_for_disconnect(self, seat: Seat) -> None:
-        """断线/踢出时让该玩家的地块进入投降过渡期（R5.5 / C-08）。
+        """断线/踢出时让该玩家的地块进入投降过渡期（R5.5）。
 
         前置：`self.state` 非空，`seat.player_id` 非空。
         后置：该玩家 `surrender_ticks_left` 被置为 `config.surrender_ticks`（40），调兵链被清空。
@@ -430,7 +433,8 @@ class Room:
 
         前置：`phase is RoomState.WAITING` 且至少 1 名玩家座。
         后置：
-        - `self.state = mapgen.generate(size, player_count, rng)`，`rng` 由房间号派生（可复现）；
+        - `self.state = mapgen.generate(player_count, rng)`：**边长由内核按玩家数算**（R2.3），
+          只在构造时显式传了 `size=`（仅测试用）才把边长交给内核；
         - 每个玩家座位的 `Seat` 信息同步进内核 `PlayerState`（name/color）；
         - 向所有座位广播 `game_start` + 全量 `tiles` + `leaderboard`；
         - `phase = RUNNING`；`tick` 从 0 开始（R1.2 `Turn 0`）。
@@ -443,14 +447,21 @@ class Room:
         if not players:
             raise protocol.ProtocolError("not_started", "no players in room")
 
-        size = self.size
         seed = self._seed_override if self._seed_override is not None else _seed_from_room_id(self.id)
         rng = random.Random(seed)
-        # 内核 `mapgen.generate` 支持 1..8 任意玩家数（含奇数）：
-        # 偶数按 180° 中心对称成对放首都，奇数多出的一座放在中心 3×3（RULES P-04）。
+        # 内核 `mapgen.generate` 支持 1..8 任意玩家数（含奇数）：奇数多出的一座放在中心 3×3。
         # 座位数的上限由 `max_players` 与内核 `MAX_PLAYERS` 保证，这里直接传真实人数。
         player_count = len(players)
-        state = mapgen.generate(size=size, player_count=player_count, rng=rng)
+        if self._size_override is None:
+            # R2.3：`size = clamp(6 + 3N + rand(0..6), 10, 40)`，由内核按人数与种子算。
+            state = mapgen.generate(player_count=player_count, rng=rng)
+        else:
+            # 显式覆盖**仅测试用**（`make_room(size=12)` 让地图小、跑得快）。
+            state = mapgen.generate(
+                player_count=player_count,
+                rng=rng,
+                size=self._clamp_size(int(self._size_override)),
+            )
 
         # 把座位身份同步给内核（INTERFACES §1.1 的 PlayerState 公开字段 name/color）。
         for seat in sorted(players, key=lambda s: s.player_id or 0):
@@ -530,7 +541,7 @@ class Room:
         - `chat` 帧：广播 `chat{system:false}` 并记入 `chat_log`（供后加入者补齐）；
         - `surrender` 帧：见 `surrender()`——调用内核 `begin_surrender`，广播
           `event{kind:"surrendered"}` + 系统消息，投降后该玩家 `move` 一律 `not_your_turn`；
-        - `ready` / `start` 帧：`start` 由房主触发开局（P-01）；
+        - `ready` / `start` 帧：`start` 由房主触发开局（R1.4）；
         - `ping` 帧：回 `pong`。
         抛出：
         - `protocol.ProtocolError` —— 帧结构非法（由 `protocol.validate_*` 抛出，`session` 转成 `reject`）。
@@ -553,7 +564,7 @@ class Room:
         elif kind == "start":
             self.start()
         elif kind == "ready":
-            # 准备阶段时长与开局条件未裁决（P-01）；当前仅记录，不改变房间行为。
+            # R1.4：开局只由房主的 `start` 触发；`ready` 仅记录，不改变房间行为。
             return
         elif kind == "ping":
             n = protocol.validate_ping(frame)["n"]
@@ -583,7 +594,7 @@ class Room:
                     self._send(seat, protocol.encode_reject(op, idx, "not_started"))
                 continue
             if pid is None:
-                # 观战者不能操作（P-02：观战者只有视野，没有座位）。
+                # 观战者不能操作（R3.10：观战者只有视野，没有座位）。
                 self._send(seat, protocol.encode_reject(op, idx, "not_your_turn"))
                 continue
             try:
@@ -623,12 +634,12 @@ class Room:
             return
 
     def surrender(self, seat: Seat) -> None:
-        """让某座位投降（`surrender` 帧的公开入口，R5.5 / C-08）。
+        """让某座位投降（`surrender` 帧的公开入口，R5.5）。
 
         前置：对局进行中且 `seat.player_id` 已分配（观战者/未开局会被 `reject`）。
         后置：
         - 调用内核 `rules.begin_surrender(state, player_id)`：该玩家进入 40 Tick 过渡期，
-          调兵链**立即清空**（C-08），期间仍会增长与作战但**不能操作**；
+          调兵链**立即清空**（R5.5），期间仍会增长与作战但**不能操作**；
         - 广播 `event{kind:"surrendered"}` 与系统消息 `"<name> surrendered."`（并记入聊天历史）；
         - 拒绝情况回 `reject`（`not_started` / `not_your_turn`），不抛异常。
         抛出：无。
@@ -636,11 +647,11 @@ class Room:
         self._handle_surrender(seat)
 
     def _handle_surrender(self, seat: Seat) -> None:
-        """`surrender` 帧：进入 40 Tick 投降过渡期（R5.5 / C-08）。
+        """`surrender` 帧：进入 40 Tick 投降过渡期（R5.5）。
 
         前置：对局进行中且 `seat.player_id` 已分配。
-        后置：该玩家 `surrender_ticks_left = config.surrender_ticks`，调兵链清空（C-08），
-              广播 `event(kind='surrendered')` 与系统聊天（P-03）。
+        后置：该玩家 `surrender_ticks_left = config.surrender_ticks`，调兵链清空（R5.5），
+              广播 `event(kind='surrendered')` 与系统聊天（R6.10）。
         抛出：无。
         """
         if self.state is None or seat.player_id is None:
@@ -654,7 +665,7 @@ class Room:
             # 已在投降过渡期内：重复请求既不改状态也不该重播事件（否则聊天被刷屏）。
             self._send(seat, protocol.encode_reject("surrender", 0, "not_your_turn"))
             return
-        # C-08：投降瞬间清空调兵链 + 进入 40 Tick 过渡期。统一交给内核。
+        # R5.5：投降瞬间清空调兵链 + 进入 40 Tick 过渡期。统一交给内核。
         try:
             game_rules.begin_surrender(self.state, seat.player_id)
         except Exception:  # noqa: BLE001 - 已出局等边界情况
@@ -662,7 +673,13 @@ class Room:
             return
         turn, _half = turn_of(self.state.tick)
         self.broadcast(protocol.encode_event("surrendered", turn, who=pstate.name, target=None))
-        self._system_chat(turn, f"{pstate.name} surrendered.")
+        self._system_chat(
+            turn,
+            f"{pstate.name} surrendered.",
+            kind="surrendered",
+            name=pstate.name,
+            color=pstate.color,
+        )
         self._send_chain(seat, self.state)
 
     # ------------------------------------------------------------------
@@ -726,6 +743,11 @@ class Room:
 
         self.broadcast(self._leaderboard_frame(state))
 
+        # R4.12：作废的调兵请求只通知本人（event + 紧随的 commands 快照），不广播。
+        # 放在 `_send_chain` 循环之前：作废处理已把 `chain_sig` 更新到最新，
+        # 后面的循环因此不会重复发同一份快照。
+        self._send_chain_dropped(report, turn)
+
         for seat in self._seats_sorted():
             self._send_chain(seat, state)
 
@@ -750,44 +772,73 @@ class Room:
     def _broadcast_report_events(self, report: Any, turn: int) -> None:
         """把 `TickReport` 里的 capture / elimination 转成 `event` + 系统聊天（PROTOCOL.md §3.7）。
 
-        前置：`report` 是内核 `TickReport`（INTERFACES §1.6）。
+        前置：`report` 是内核 `TickReport`。
         后置：广播顺序固定为「captures（按 tile index 升序）→ eliminations（按 player id 升序）」，
-              保证确定性（R7.3）。
-        抛出：无 —— 对报告字段缺失采取宽容处理（内核迭代期间字段可能尚未齐备）。
+              保证确定性（R7.3）。聊天栏严格只产 R6.10 允许的两种系统消息：
+              `"<A> captured <B>."` 与 `"<B> left."`。
+        抛出：无 —— 对报告字段缺失采取宽容处理。
 
-        字段来源（内核 `rules.CaptureEvent` / `rules.EliminationEvent`）：
-        - `CaptureEvent(tile, new_owner, previous_owner, amount, reason, captured_capital)`
-        - `EliminationEvent(player, reason, turn, half)`
-        「占空地」不刷系统消息（原站同样不发），只在 `previous_owner is not None` 时播 `captured`。
+        `captured` 的三条硬约束（R6.10 / R5.5）：
+        1. **必须有明确攻占者**：`new_owner is None` 不播（例如投降过渡期满、地块转中立 R5.5，
+           `reason="neutral"`，没有「谁攻占了谁」这回事）；
+        2. **同一次攻占只播一条**：攻陷王城会一次性继承全部领土（R5.2），内核按地块
+           逐块发 `reason="inherit"` 事件，若逐块播报会刷几十条重复文案；
+           这里按 `(攻占者, 被攻占者)` 在本刻内去重；
+        3. **文案不含回合号**：`"<A> captured <B>."`；回合号只填 `chat` 帧的 `turn` 字段，
+           由前端 `chat.ts::renderLine` 渲染成独立的 `.turn` 元素（显示为 `A captured B. 37.`）。
         """
         state = self.state
         if state is None:
             return
 
-        def name_of(pid: Any) -> str:
+        def ident_of(pid: Any) -> tuple[str, str]:
+            """`player_id` → `(name, color)`；查不到时降级为 `(str(pid), "")`。"""
             if pid is None:
-                return ""
+                return ("", "")
             try:
                 pstate = state.players.get(int(pid))
             except (TypeError, ValueError):
-                return ""
-            return pstate.name if pstate is not None else str(pid)
+                return ("", "")
+            if pstate is None:
+                return (str(pid), "")
+            return (pstate.name, pstate.color)
 
         captures = list(getattr(report, "captures", []) or [])
+        announced: set[tuple[str, str]] = set()
         for cap in sorted(captures, key=lambda c: int(getattr(c, "tile", 0))):
             target_pid = getattr(cap, "previous_owner", None)
             if target_pid is None:
-                # 无主地块的攻占不值得刷屏（原站也不为占空地发系统消息）。
+                # 占空地：不是「攻占某人的地」，不播。
                 continue
             if getattr(cap, "reason", "arrive") not in ("arrive", "inherit"):
-                # "neutral"（C-09 投降期满转中立）不是「被攻占」，不发 captured。
+                # `"neutral"`（R5.5 投降过渡期满转中立）没有攻占者，不播。
                 continue
             victor = getattr(cap, "new_owner", None)
+            if victor is None:
+                # 没有获胜方就不存在「谁攻占了谁」。
+                continue
+            pair = (ident_of(victor), ident_of(target_pid))
+            if pair in announced:
+                continue
+            announced.add(pair)
+            (v_name, v_color), (t_name, t_color) = pair
             self.broadcast(
-                protocol.encode_event("captured", turn, who=name_of(victor), target=name_of(target_pid))
+                protocol.encode_event("captured", turn, who=v_name, target=t_name)
             )
-            # 系统消息格式对齐原站：「<A> captured <B>.」（末尾句点，事件帧另发）。
-            self._system_chat(turn, f"{name_of(victor)} captured {name_of(target_pid)}.")
+            # R6.10：`text` **只**写 `"<A> captured <B>."`，回合号由 `chat` 帧的 `turn`
+            # 字段单独承载 —— 前端 `chat.ts::renderLine` 会把 `turn` 渲染成独立的 `.turn`
+            # 元素（视觉结果是 `A captured B. 37.`）。若把回合号也塞进 `text`，
+            # 界面会重复成 `... 37. 37.`。
+            # `kind`/`target`/`targetColor` 供前端渲染两个色块（攻占方 + 被攻占方）。
+            self._system_chat(
+                turn,
+                f"{v_name} captured {t_name}.",
+                kind="captured",
+                name=v_name,
+                color=v_color,
+                target=t_name,
+                target_color=t_color,
+            )
 
         eliminations = list(getattr(report, "eliminations", []) or [])
         for elim in sorted(
@@ -795,10 +846,10 @@ class Room:
             key=lambda e: int(getattr(e, "player", getattr(e, "player_id", 0))),
         ):
             pid = getattr(elim, "player", getattr(elim, "player_id", None))
-            self.broadcast(
-                protocol.encode_event("left", turn, who=name_of(pid), target=None)
-            )
-            self._system_chat(turn, f"{name_of(pid)} left.")
+            if pid is None:
+                continue
+            name, color = ident_of(pid)
+            self._announce_left(("p", int(pid)), name, color, turn)
 
     # ------------------------------------------------------------------
     # 帧构造 / 发送
@@ -812,7 +863,7 @@ class Room:
 
         前置：`state` 非空。
         后置：每行字段 `playerId/name/color/army/land/alive/surrenderIn/star`；
-              `army = state.army_total(pid)`（R6.8）、`land = state.land_count(pid)`（C-16）。
+              `army = state.army_total(pid)`（R6.8）、`land = state.land_count(pid)`（R6.8）。
         抛出：无。
         """
         rows: list[dict] = []
@@ -836,7 +887,7 @@ class Room:
         return protocol.encode_leaderboard(rows)
 
     def _sight_of(self, state: GameState, seat: Seat) -> set[int]:
-        """该座位当前可见的地块集合（观战者 = 全图，P-02）。"""
+        """该座位当前可见的地块集合（观战者 = 全图，R3.10）。"""
         if seat.player_id is None:
             if self._sight_all is None or len(self._sight_all) != state.size * state.size:
                 self._sight_all = set(range(state.size * state.size))
@@ -848,7 +899,7 @@ class Room:
 
         前置：`state` 非空。
         后置：
-        - 裁剪一律调用 `game.view.project(state, seat.player_id)`（C-17）；
+        - 裁剪一律调用 `game.view.project(state, seat.player_id)`（R3.5 / R3.6 / R6.9）；
         - 增量 = 与 `seat.last_view` 对比后的变化项 + **新进入视野的补发**（否则客户端缺格）；
         - 同时按 `visible_diff(seat.last_sight, 新视野)` 下发 `sight` 帧（PROTOCOL.md §3.4）；
         - 无变化则不发 `tiles` 帧。
@@ -884,33 +935,65 @@ class Room:
         seat.last_view = projection
         seat.last_sight = new_sight
 
-    def _send_chain(self, seat: Seat, state: GameState) -> None:
-        """回显该座位的权威调兵链（PROTOCOL.md §3.6），仅在签名变化时发送。
+    def _send_chain(self, seat: Seat, state: GameState, *, force: bool = False) -> None:
+        """回显该座位的权威调兵链（PROTOCOL.md §3.6），默认仅在签名变化时发送。
 
         前置：`state` 非空；观战者（`player_id is None`）直接跳过。
-        后置：`seat.chain_sig` 更新为本次签名；无变化则不写帧。
+        后置：`seat.chain_sig` 更新为本次签名；无变化且 `force=False` 则不写帧。
+              `force=True` 时无条件重发一份全量快照（R4.12 作废后必须紧随补给，§3.7）。
         抛出：无。
         """
         pid = seat.player_id
         if pid is None:
             return
-        pstate = state.players.get(pid)
-        if pstate is None:
-            return
-        chain = list(getattr(pstate, "chain", []) or [])
-        sig = tuple(
-            (int(getattr(req, "src", 0)), _dir_name(getattr(req, "dir", "")), float(getattr(req, "ratio", 1.0)))
-            for req in chain
-        )
-        if sig == seat.chain_sig:
+        # 链内容一律以内核的线协议快照为准（单一事实源：`commands.chain_snapshot`）。
+        chain = game_commands.chain_snapshot(state, pid)
+        sig = tuple((int(c["from"]), str(c["dir"]), float(c["ratio"])) for c in chain)
+        if not force and sig == seat.chain_sig:
             return
         seat.chain_sig = sig
-        self._send(
-            seat,
-            protocol.encode_commands(
-                [{"from": src, "dir": d, "ratio": r} for (src, d, r) in sig]
-            ),
+        self._send(seat, protocol.encode_commands(chain))
+
+    def _send_chain_dropped(self, report: Any, turn: int) -> None:
+        """把本刻作废的调兵请求**只发给各自的拥有者**（R4.12 / PROTOCOL.md §3.7）。
+
+        前置：`report` 是内核 `TickReport`；`report.dropped` 每项含
+              `(player_id, src, dir, ratio, reason, cascade)`（`dir` 已是协议字面量）。
+        后置：对每条作废请求，向该玩家单独发两条帧，顺序固定：
+              ① `event{kind:"chain_dropped"}`；
+              ② 紧随其后的 `commands` 全量快照（链已变短）。
+              其它座位**收不到**这两帧（不广播）。
+        抛出：无（座位已断开/已出局则跳过，不影响其它玩家）。
+        """
+        state = self.state
+        if state is None:
+            return
+        dropped = list(getattr(report, "dropped", []) or [])
+        if not dropped:
+            return
+        # R7.3：按 (player_id, src) 升序下发，不依赖内核列表顺序。
+        ordered = sorted(
+            dropped,
+            key=lambda d: (int(getattr(d, "player_id", 0)), int(getattr(d, "src", 0))),
         )
+        for item in ordered:
+            pid = int(getattr(item, "player_id", -1))
+            seat = self._seat_of(pid)
+            if seat is None or seat.closed:
+                continue
+            self._send(
+                seat,
+                protocol.encode_chain_dropped(
+                    player_id=pid,
+                    src=int(getattr(item, "src", 0)),
+                    direction=_dir_name(getattr(item, "dir", "")),
+                    ratio=float(getattr(item, "ratio", 1.0)),
+                    reason=str(getattr(item, "reason", "src_lost")),
+                    cascade=int(getattr(item, "cascade", 0)),
+                ),
+            )
+            # 链已变短：立刻补一份全量快照（§3.7 要求紧随 chain_dropped）。
+            self._send_chain(seat, state, force=True)
 
     # ------------------------------------------------------------------
     # 聊天历史
@@ -927,9 +1010,51 @@ class Room:
             del self.chat_log[: len(self.chat_log) - CHAT_LOG_MAX]
         self.broadcast(frame)
 
-    def _system_chat(self, turn: int, text: str) -> None:
-        """广播一条系统消息（`system=True`，无作者）。前置：无。后置：入历史并广播。抛出：同 `broadcast`。"""
-        self._log_chat(protocol.encode_chat(turn, "", "", text, system=True))
+    def _system_chat(
+        self,
+        turn: int,
+        text: str,
+        *,
+        kind: str,
+        name: str = "",
+        color: str = "",
+        target: str | None = None,
+        target_color: str | None = None,
+    ) -> None:
+        """广播一条系统播报（`system=True`，R6.10）。
+
+        前置：`kind` ∈ `{surrendered, captured, left}`（`protocol.SYSTEM_CHAT_KINDS`）；
+              `captured` 需给 `target`/`target_color`（被攻占者及其颜色），其余 `None`。
+        后置：入历史并广播；`text` **不含回合号**，回合号只在 `turn` 字段。
+        抛出：`ValueError` —— `kind` 非法（编程错误，测试会立刻发现）。
+        """
+        self._log_chat(
+            protocol.encode_chat(
+                turn,
+                name,
+                color,
+                text,
+                system=True,
+                kind=kind,
+                target=target,
+                target_color=target_color,
+            )
+        )
+
+    def _announce_left(self, key: tuple[str, int], name: str, color: str, turn: int) -> None:
+        """播报某座位/玩家「离开」（`event{kind:"left"}` + `chat{kind:"left"}`，R6.10）。
+
+        前置：`key` 是 `_left_key(seat)` 或 `("p", player_id)` 形式的稳定标识；
+              `name`/`color` 是该玩家的显示名与配色（离开者色块用）。
+        后置：**同一对象只播一次**（结算出局与关页面可能先后发生，重复播会刷屏）；
+              首次播报时广播事件帧并记入聊天历史。
+        抛出：同 `broadcast`。
+        """
+        if key in self._left_announced:
+            return
+        self._left_announced.add(key)
+        self.broadcast(protocol.encode_event("left", turn, who=name, target=None))
+        self._system_chat(turn, f"{name} left.", kind="left", name=name, color=color)
 
     def broadcast(self, frame: dict) -> None:
         """把一帧**同步**投递给房间内所有座位（INTERFACES §2.2）。
@@ -993,6 +1118,13 @@ class Room:
             "maxPlayers": self.max_players,
             "state": self.phase.value,
         }
+
+
+def _left_key(seat: Seat) -> tuple[str, int]:
+    """`_announce_left` 的去重键：优先用 `player_id`（跨座位稳定），否则用席位号。"""
+    if seat.player_id is not None:
+        return ("p", int(seat.player_id))
+    return ("s", int(seat.seq))
 
 
 def _dir_name(direction: Any) -> str:

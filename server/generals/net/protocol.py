@@ -22,6 +22,7 @@ __all__ = [
     "CLIENT_FRAME_TYPES",
     "DIRECTIONS",
     "EVENT_KINDS",
+    "SYSTEM_CHAT_KINDS",
     "OPS",
     "ProtocolError",
     "parse_client_frame",
@@ -39,6 +40,7 @@ __all__ = [
     "encode_commands",
     "encode_event",
     "encode_chat",
+    "encode_chain_dropped",
     "encode_game_over",
     "encode_reject",
     "encode_ack",
@@ -74,13 +76,25 @@ CLIENT_FRAME_TYPES: Final[frozenset[str]] = frozenset(
     {"join", "spectate", "ready", "start", "commands", "chat", "surrender", "ping"}
 )
 
+#: 系统聊天的 `kind` 集合（R6.10：聊天栏**只允许**这三种系统消息）。
+SYSTEM_CHAT_KINDS: Final[tuple[str, ...]] = (
+    "surrendered",
+    "captured",
+    "left",
+)
+
 #: 下行事件 kind 集合（PROTOCOL.md §3.7）。
+#:
+#: 注意：`chain_dropped` 虽然也是 `event` 帧，但字段结构与其它五种**不同**
+#: （`seat`/`from`/`dir`/`ratio`/`reason`/`cascade`，没有 `turn`/`who`/`target`），
+#: 因此必须用专用编码器 `encode_chain_dropped`，不要走 `encode_event`。
 EVENT_KINDS: Final[tuple[str, ...]] = (
     "captured",
     "left",
     "surrendered",
     "kicked",
     "game_over",
+    "chain_dropped",
 )
 
 #: PROTOCOL.md §5 错误码表（本模块会用到的全集，`ProtocolError.code` 必须取自这里）。
@@ -164,11 +178,11 @@ def _as_dir(value: Any) -> str:
 
 
 def _as_ratio(value: Any, *, default: float = 1.0) -> float:
-    """比例规范化：缺失 => `default`；非数或非有限值 => `bad_frame`；越界 => 钳到 (0, 1]。
+    """比例规范化：缺失 => `default`；非数或非有限值 => `bad_frame`；越界 => 钳到 `[0.1, 1.0]`。
 
-    规则依据：PROTOCOL.md §2.4 声明 `ratio: float(0..1]`；
-    R6.6 / C-02 规定比例范围为 10%–100%，但**入队时比例按请求自身记录**（C-06），
-    服务端在此处只做「线协议合法性」钳制，业务侧的 0 兵力请求合法性由内核 `commands.enqueue_move` 负责（C-02）。
+    规则依据：R6.6 规定比例范围 10%–100%（`+`/`-` 步长 10%）。
+    比例只影响调兵量、不影响请求合法性，因此越界按边界取值而不拒绝整条指令；
+    调兵量本身在发起调兵阶段才计算（R6.7 / R7.2）。
     """
     if value is None:
         return default
@@ -177,10 +191,10 @@ def _as_ratio(value: Any, *, default: float = 1.0) -> float:
     ratio = float(value)
     if not math.isfinite(ratio):
         raise ProtocolError("bad_frame", "ratio must be finite")
-    # TODO(P-01 待澄清？) PROTOCOL.md 只写 (0,1]；C-02 允许 0 兵力请求但比例仍应 >0。
-    #   这里钳到 (0,1]（<=0 按最小正比例处理，等价于实际 1 兵），避免出现 ratio=0 的无意义请求。
-    if ratio <= 0.0:
-        return 1e-9
+    # PROTOCOL.md §2.4 的 `ratio` 取值区间为 [0.1, 1.0]（R6.6）。这里按边界钳制，
+    # 不因为越界而拒绝整条指令（比例本身不影响合法性，只影响调兵量）。
+    if ratio <= 0.1:
+        return 0.1
     return min(ratio, 1.0)
 
 
@@ -496,24 +510,46 @@ def encode_commands(chain: list[dict]) -> dict:
 def encode_event(kind: str, turn: int, who: str | None = None, target: str | None = None) -> dict:
     """`event` 系统事件帧（PROTOCOL.md §3.7）。
 
-    前置：`kind` ∈ `EVENT_KINDS`。
+    前置：`kind` ∈ `EVENT_KINDS`，且**不是** `chain_dropped`（后者字段结构不同，
+          请用 `encode_chain_dropped`）。
     后置：返回 `{"t": "event", "kind", "turn", "who", "target"}`；示例里 `who`/`target` 恒出现，
           为 null 时显式给出 `None`（JSON `null`），保证前端解构安全。
-    抛出：`ValueError` —— `kind` 不在 `EVENT_KINDS`（属于编程错误）。
+    抛出：`ValueError` —— `kind` 不在 `EVENT_KINDS`，或是需要专用编码器的 `chain_dropped`。
     """
     if kind not in EVENT_KINDS:
         raise ValueError(f"unknown event kind: {kind!r}")
+    if kind == "chain_dropped":
+        raise ValueError("chain_dropped must use encode_chain_dropped()")
     return {"t": "event", "kind": kind, "turn": int(turn), "who": who, "target": target}
 
 
-def encode_chat(turn: int, name: str, color: str, text: str, system: bool = False) -> dict:
+def encode_chat(
+    turn: int,
+    name: str,
+    color: str,
+    text: str,
+    system: bool = False,
+    *,
+    kind: str | None = None,
+    target: str | None = None,
+    target_color: str | None = None,
+) -> dict:
     """`chat` 下行帧（PROTOCOL.md §3.8）。
 
-    前置：`system=True` 时 `name`/`color` 可以是占位值（前端据 `system` 决定样式）。
-    后置：返回 `{"t": "chat", "turn", "name", "color", "text", "system"}`。
-    抛出：无。
+    前置：
+      - `system=False`：真人发言，`name`/`color` 是发言人；
+      - `system=True`：系统播报，`kind` ∈ `SYSTEM_CHAT_KINDS`（R6.10 只允许三种）。
+        `captured` 还需 `target`/`target_color`（被攻占者及其颜色），`surrendered`/`left`
+        两者为 `None`。
+      - **`text` 里不含回合号**：回合号只走 `turn` 字段，前端渲染成独立的 `.turn` 元素。
+    后置：返回 `{"t","turn","name","color","text","system"}`；系统消息额外带
+          `"kind"`，`captured` 再带 `"target"`/`"targetColor"`（字段顺序与
+          `web/src/core/types.ts::FrameChat` 对齐，便于前端按 `kind` 渲染两个色块）。
+    抛出：`ValueError` —— `system=True` 且 `kind` 不是 `SYSTEM_CHAT_KINDS` 之一。
     """
-    return {
+    if system and kind is not None and kind not in SYSTEM_CHAT_KINDS:
+        raise ValueError(f"unknown system chat kind: {kind!r}")
+    frame = {
         "t": "chat",
         "turn": int(turn),
         "name": str(name),
@@ -521,6 +557,12 @@ def encode_chat(turn: int, name: str, color: str, text: str, system: bool = Fals
         "text": str(text),
         "system": bool(system),
     }
+    if system and kind is not None:
+        frame["kind"] = str(kind)
+        if target is not None:
+            frame["target"] = str(target)
+            frame["targetColor"] = str(target_color) if target_color is not None else str(color)
+    return frame
 
 
 def encode_game_over(winner: int | None, turn: int) -> dict:
@@ -549,6 +591,36 @@ def encode_ack(op: str, seq: int) -> dict:
     # 已定(PROTOCOL §2.4.1): 保留帧但默认不发，只在 reject 时回帧。
     """
     return {"t": "ack", "op": str(op), "seq": int(seq)}
+
+
+def encode_chain_dropped(
+    player_id: int,
+    src: int,
+    direction: str,
+    ratio: float,
+    reason: str,
+    cascade: int = 0,
+) -> dict:
+    """`chain_dropped` 事件帧（PROTOCOL.md §3.7 / R4.12 调兵请求作废）。
+
+    前置：`player_id` 是请求的拥有者（`PlayerId`，与 `joined.playerId` 同源）；
+          `direction` 是协议字面量 `"up"|"down"|"left"|"right"`；
+          `reason` ∈ `{"src_lost", "zero_army"}`（R4.12①）；
+          `cascade` ≥ 0，表示因本请求级联作废的下游请求条数（不含自己，R4.12③）。
+    后置：返回 `{"t": "event", "kind": "chain_dropped", "playerId", "from", "dir",
+          "ratio", "reason", "cascade"}`。
+    抛出：无（`reason` 未知时原样透传，便于向前兼容新原因）。
+    """
+    return {
+        "t": "event",
+        "kind": "chain_dropped",
+        "playerId": int(player_id),
+        "from": int(src),
+        "dir": str(direction),
+        "ratio": float(ratio),
+        "reason": str(reason),
+        "cascade": int(cascade),
+    }
 
 
 def encode_pong(n: int) -> dict:

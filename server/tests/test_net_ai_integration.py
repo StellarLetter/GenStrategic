@@ -116,7 +116,7 @@ def test_ai_vs_ai_game_runs_without_rejects_and_ends_when_forced() -> None:
     # 终局条件与 `game_over` 都在上面那一轮里就发生了 —— 此时再「强行制造终局」是空操作。
     # 两种情况都必须验证：`game_over` 已下发、`winner` 与内核一致、房间进入 ENDED。
     if not room.state.ended:
-        # 强行制造终局条件：把 B 的地盘全部并入 A（R7.4 / C-12）。
+        # 强行制造终局条件：把 B 的地盘全部并入 A（R7.4）。
         for tile in room.state.tiles:
             if tile.owner == b.player_id:
                 tile.owner = a.player_id

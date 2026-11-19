@@ -165,7 +165,7 @@ async def run(port: int, ticks: int) -> int:
             else:
                 print(f"[ok] chat: {chats[-1].get('text')!r}")
 
-            # 投降 → 40 Tick 过渡 → 全地转中立（R5.5 / C-08）
+            # 投降 → 40 Tick 过渡 → 全地转中立（R5.5）
             await b.send({"t": "surrender"})
             await pump(b, 0.5)
             if not [f for f in b.frames if f["t"] == "event" and f.get("kind") == "surrendered"]:
@@ -183,7 +183,7 @@ async def run(port: int, ticks: int) -> int:
                 else:
                     print(f"[ok] 观战者收到全图 {len(s.tiles)} 格")
 
-        # 奇数玩家（3 人房）——回归 RULES P-04：内核 mapgen 支持任意 1..8 人，
+        # 奇数玩家（3 人房）——回归 RULES R2.3：内核 mapgen 支持任意 1..8 人，
         # 不能再出现「抬成偶数后多出一个无座位的僵尸玩家」。
         async with (
             websockets.connect(url) as ws_1,
@@ -213,11 +213,24 @@ async def run(port: int, ticks: int) -> int:
             rooms = (await http.get("/api/rooms")).json()
             cfg = (await http.get("/api/config")).json()
             print(f"[ok] /api/rooms -> {rooms}")
-            print(f"[ok] /api/config -> tickMs={cfg['tickMs']} defaultSize={cfg['defaultSize']}")
+            print(
+                f"[ok] /api/config -> tickMs={cfg['tickMs']} "
+                f"maxPlayers={cfg['maxPlayers']} "
+                f"minSize={cfg.get('minSize')} maxSize={cfg.get('maxSize')}"
+            )
             if not isinstance(rooms, list):
                 failures.append("/api/rooms 不是数组")
             if cfg["tickMs"] != 500:
                 failures.append("/api/config tickMs != 500")
+            # R2.3 起地图边长由玩家数决定，配置里不再承诺一个默认边长；
+            # 这里只校验仍然稳定的上下界（`defaultSize` 若移除也不影响本脚本）。
+            if "minSize" in cfg and "maxSize" in cfg:
+                if not (isinstance(cfg["minSize"], int) and isinstance(cfg["maxSize"], int)):
+                    failures.append("/api/config minSize/maxSize 不是整数")
+                elif not 10 <= cfg["minSize"] <= cfg["maxSize"] <= 40:
+                    failures.append(
+                        f"/api/config 尺寸上下界异常 minSize={cfg['minSize']} maxSize={cfg['maxSize']}"
+                    )
     finally:
         with contextlib.suppress(Exception):
             proc.terminate()
