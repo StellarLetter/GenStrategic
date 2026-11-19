@@ -277,24 +277,4 @@
   color: #777777;
 }
 
-/* ---------------------------------------------------------- 提示条（R4.12 chain_dropped） */
-
-#toast {
-  position: absolute;
-  bottom: 96px;
-  left: 50%;
-  transform: translateX(-50%);
-  padding: 9px 18px;
-  font-size: 14px;
-  font-weight: 700;
-  color: #ffffff;
-  background: rgba(0, 0, 0, 0.82);
-  border-left: 4px solid var(--accent);
-  z-index: 30;
-  pointer-events: none;
-  white-space: nowrap;
-}
-
-#toast[hidden] {
-  display: none;
-}
+/* 调兵作废（R4.12 chain_dropped）不弹提示：直接按权威快照静默清空调兵链与其渲染。 */

@@ -34,6 +34,19 @@
 `game/tick.py`（中立守住的落地分支）、`game/rules.py`（`apply_capture` 只对自己地块累加）。
 `NEUTRAL_OWNER` 永不写进地块，只出现在 `BattleResult.participants` / `winner` 里。
 
+### 变更 B：调兵被作废不再弹提示
+
+**用户原话**
+
+> 另外调兵被取消不用专门弹出通知，静默取消调兵链及其渲染即可。
+
+**落地**
+
+- 线协议不变：仍下发 `chain_dropped` 事件并紧跟权威 `commands` 全量快照（R4.12 要求"作废情况立即下发"）；
+- 前端删掉 `#toast` 提示条：收到作废后只按快照静默清空本地调兵链与其渲染（含选中态校正），不做任何弹窗/飘字。
+
+**受影响**：`web/src/main.ts`（移除 toast）、`web/styles/game.css`（删 toast 样式）、README 描述。
+
 ---
 
 ## 2026-11-19 · 第四批：地图生成、中立语义、聊天播报、预调兵

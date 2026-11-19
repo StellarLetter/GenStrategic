@@ -56,7 +56,7 @@ scripts/                  一键脚本 + 端到端冒烟
 | `server/generals/net` 房间与连接 | ✅ | 大厅、席位、协议编解码、视野增量、慢客户端处理、刻时钟、`chain_dropped` 作废反馈、聊天栏只播三种消息（R6.10）、边长随开局人数（R2.3） |
 | `server/generals/ai` AI 接口 | ✅ | `register()` 注册 + `hold/greedy/random` 内置策略 + `RemoteAgent`（进程外 HTTP） |
 | `server/generals/transport` + `app` | ✅ | FastAPI 装配、`/api/rooms`、`/api/config`、`/healthz`、`/ws`、静态托管 `web/dist` |
-| `web` 前端 | ✅ | 地图渲染（迷雾连续、黑色网格线）、排行榜、聊天（首行 `Chat is being recorded.` + 三种播报）、调兵链（WASD/Q/E/±）、预调兵、点击调兵、缩放平移、作废提示条 |
+| `web` 前端 | ✅ | 地图渲染（迷雾连续、黑色网格线）、排行榜、聊天（首行 `Chat is being recorded.` + 三种播报）、调兵链（WASD/Q/E/±）、预调兵、点击调兵、缩放平移、作废静默清链 |
 | 协议级端到端 `scripts/e2e_smoke.py` | ✅ | 真起 uvicorn + 真 WS 客户端，覆盖 join/start/tick/move/chat/surrender/观战/3 人房/HTTP |
 | 浏览器级端到端 `web/scripts/e2e-page.mjs` | ✅ | 真 Edge 双页面开局，断言画布尺寸、格边长（R2.3）、迷雾底色、网格线、排行榜、回合文本、聊天首行提示并截图 |
 | 观战、房间列表页 | ✅ | `web/waiting.html` + `?spectate=1` |

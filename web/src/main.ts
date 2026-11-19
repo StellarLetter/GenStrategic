@@ -71,11 +71,7 @@ surrenderButton.id = 'surrender-button';
 surrenderButton.textContent = 'Surrender';
 page.appendChild(surrenderButton);
 
-/** 调兵作废提示条（R4.12 `chain_dropped`）。 */
-const toast = document.createElement('div');
-toast.id = 'toast';
-toast.hidden = true;
-page.appendChild(toast);
+/** 服务端 `chain_dropped`（R4.12）只用于静默作废：链由随后的权威 `commands` 快照清空。 */
 void sidePanel;
 
 const turnCounter = new TurnCounter(page);
@@ -90,9 +86,6 @@ let cam: Camera = makeCamera(state.size, 800, 800, 1);
 let clickMove = true;
 /** 开局后待执行「镜头对准自己的首都」。 */
 let pendingRecenter = false;
-/** 已提示过的 `chain_dropped`，避免同一帧重复弹提示。 */
-let shownDrop: ClientState['lastDropped'] = null;
-let toastTimer = 0;
 
 const client = new GameClient(defaultWsUrl());
 
@@ -131,25 +124,6 @@ function draw(): void {
 function syncButtons(): void {
   startButton.hidden = state.started;
   surrenderButton.hidden = !state.started || state.me === null;
-}
-
-/** 显示一条短暂提示（R4.12 调兵作废）。 */
-function showToast(text: string): void {
-  toast.textContent = text;
-  toast.hidden = false;
-  window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => {
-    toast.hidden = true;
-  }, 2600);
-}
-
-/** `chain_dropped` → 中文提示。 */
-function dropText(drop: NonNullable<ClientState['lastDropped']>): string {
-  const head =
-    drop.reason === 'zero_army'
-      ? '调兵作废：可调兵力为 0（1 兵地块调不动）'
-      : '调兵作废：起点已不归你控制';
-  return drop.cascade > 0 ? `${head}，连带作废 ${drop.cascade} 条` : head;
 }
 
 /**
@@ -270,13 +244,9 @@ client.onFrame = (frame: ServerFrame) => {
   }
   if (frame.t === 'commands') {
     // 服务端 `commands` 是权威快照（R6.3）。作废后链会变短，必须整份覆盖，
-    // 只比长度会漏掉「同长度但内容变了」的情况。
+    // 只比长度会漏掉「同长度但内容变了」的情况。作废是静默的：只清链与选中，不弹提示。
     chain = { ...chain, chain: state.chain };
     pruneSelection();
-  }
-  if (state.lastDropped && state.lastDropped !== shownDrop) {
-    shownDrop = state.lastDropped;
-    showToast(dropText(state.lastDropped));
   }
   if (isStart && state.me !== null) pendingRecenter = true;
   draw();
