@@ -121,9 +121,13 @@ def resolve_encounters(flights: list[Flight]) -> tuple[list[Flight], list[Encoun
     """R4.5 / R7.2：找出互为出发↔目标的成对兵力，抵消。
     后置：返回 (剩余继续飞行的 flights, 交锋记录)；不修改输入的 dst 顺序以外的任何东西。"""
 
+NEUTRAL_OWNER = -1      # 中立驻军的伪 owner（R3.8）：只出现在 BattleResult 里，永不写进地块
+
 def resolve_battle(arrivals: list[Flight], tile: Tile) -> BattleResult:
-    """R4.3 / R4.4：把到达兵力与守军按阵营求和后互减。
-    后置：BattleResult 含 winner(owner|None) 与 remaining，不直接改写 tile。"""
+    """R3.8 / R4.3 / R4.4：把到达兵力与守军按阵营求和后互减。
+    守军：有主地块记在 tile.owner 下；中立地块（驻军 > 0）记在 NEUTRAL_OWNER 下，
+    所以打中立城市同样是互减（剩余 = 到达 − 驻军），不是累加。
+    后置：BattleResult 含 winner(owner|None|NEUTRAL_OWNER) 与 remaining，不直接改写 tile。"""
 ```
 
 ### 1.5 `game.rules` — 规则原语
@@ -134,7 +138,8 @@ def apply_growth(state) -> list[GrowthEvent]:
 
 def apply_capture(state, dst: int, owner: int, amount: int) -> CaptureEvent:
     """R4.4 / R4.6 / R5.2：把 amount 兵力的所有权转给 owner。
-    若 dst 是 owner 原有地块 → 累加；若是他人王城 → 触发 inherit_all（R5.2）。"""
+    若 dst 原本就归 owner → 累加；否则（他人地块或中立地块）控制者改为 owner、
+    兵力 = amount（结算剩余兵力，不与驻军累加）；若是他人王城 → 触发 inherit_all（R5.2）。"""
 
 def inherit_all(state, conqueror: int, victim: int) -> None:
     """R5.2：victim 全部地块转给 conqueror，每块继承 max(army//2, 1)，地形不变。"""
@@ -286,7 +291,7 @@ export interface ClientState {
   players: PlayerInfo[]; tiles: Tile[]; sight: Set<number>;
   leaderboard: LeaderRow[]; chain: MoveRequest[]; chat: ChatLine[];
   over: boolean; winner: number | null; lastError: string | null;
-  lastDropped: DroppedNotice | null;   // R4.12 chain_dropped 提示
+  lastDropped: DroppedNotice | null;   // R4.12 chain_dropped（仅静默清链，不弹提示）
 }
 export function applyFrame(state: ClientState, frame: ServerFrame): ClientState  // 不可变返回
 

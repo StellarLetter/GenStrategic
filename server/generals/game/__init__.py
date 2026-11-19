@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from . import combat, commands, mapgen, rules, state, tick, view
 from .combat import (
+    NEUTRAL_OWNER,
     BattleParticipant,
     BattleResult,
     EncounterResult,
@@ -107,6 +108,7 @@ __all__ = [
     "chain_snapshot",
     "launched_amount",
     # combat
+    "NEUTRAL_OWNER",
     "Flight",
     "EncounterResult",
     "BattleParticipant",

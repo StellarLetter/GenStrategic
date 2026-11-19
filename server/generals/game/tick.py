@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from .commands import MoveRequest, launched_amount
 from .combat import (
+    NEUTRAL_OWNER,
     BattleResult,
     EncounterResult,
     Flight,
@@ -279,9 +280,10 @@ def _apply_dst_result(
     """把一块地的阵地战结果落到权威状态上（阶段 4 判定 + 阶段 5 更新占领）。
 
     规则映射：
-      * 无战斗（参战 owner ≤ 1）→ 累加（R4.6）；若 dst 中立则到达方占领（R4.4）。
-      * 并列最大 → 兵力归零、**不占领**，原控制者保留（R4.3）。
-      * 独大 → 剩余兵力 > 0 即攻占（R4.4）；攻占他人王城触发全继承（R5.2）与
+      * 无战斗（参战 owner ≤ 1）→ 累加（R4.6）；若 dst 中立空地（无驻军）则到达方占领（R4.4）。
+      * 并列最大 → 兵力归零、**不占领**，原控制者（或中立）保留（R4.3）。
+      * 中立驻军独大 → 地块仍中立，兵力 = 剩余兵力（R3.8 / R4.3）。
+      * 玩家独大 → 剩余兵力 > 0 即攻占（R4.4）；攻占他人王城触发全继承（R5.2）与
         王城转"首都转化型城市"（R5.4）。
     """
     dst_tile = state.tiles[dst]
@@ -292,8 +294,7 @@ def _apply_dst_result(
         if result.remaining <= 0:
             return
         if dst_tile.owner is None:
-            # 中立且只有 1 方到达 → 该方占领（R4.4：到达兵力 > 0 即被到达方占领）。
-            # 中立兵力不在参战集合里（owner=None），故占领后 dst 兵力 = 到达量。
+            # 中立空地（army == 0）且只有 1 方到达 → 该方占领（R4.4）。
             arriving_owner = arrivals[0].owner if arrivals else participants[0].owner
             ev, extra = apply_capture(state, dst, arriving_owner, result.remaining)
             captures.append(ev)
@@ -312,6 +313,14 @@ def _apply_dst_result(
         if dst_tile.army != 0:
             dst_tile.army = 0
         changed.add(dst)
+        return
+
+    if result.winner == NEUTRAL_OWNER:
+        # --- 中立驻军守住了：不换主，兵力 = 驻军 - 到达方（R3.8 / R4.3）-----
+        if dst_tile.owner is not None or dst_tile.army != result.remaining:
+            dst_tile.owner = None
+            dst_tile.army = result.remaining
+            changed.add(dst)
         return
 
     # --- 独大：剩余兵力 > 0 即攻占（R4.4）-------------------------------

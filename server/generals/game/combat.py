@@ -8,8 +8,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
 
 from .state import Tile
+
+#: 中立驻军的伪 owner id（R3.8：中立对所有人敌对，被攻打时按 R4.3 参战）。
+#: 只出现在 :class:`BattleResult` 的 ``participants`` / ``winner`` 里，**永不写进地块**。
+#: 用负数保证它与任何真实 ``player_id``（``0..7``）不冲突，并在升序遍历时排在真实玩家之前。
+NEUTRAL_OWNER: Final[int] = -1
 
 
 @dataclass(frozen=True)
@@ -69,8 +75,10 @@ class BattleResult:
 
     - ``tile``：目标地块 index；``-1`` 表示这是遭遇战记录（不来自阵地战）。
     - ``participants``：参战各方（按 ``owner`` 升序），含守军与控制者；
+      中立驻军以伪 owner :data:`NEUTRAL_OWNER` 出现；
       若只有 1 个 owner（无战斗，R4.6 累加）则只含该 owner。
-    - ``winner``：胜方 owner；并列最大或单方累加时为 ``None``。
+    - ``winner``：胜方 owner；并列最大或单方累加时为 ``None``；
+      ``NEUTRAL_OWNER`` 表示中立驻军守住了该地块（不换主）。
     - ``remaining``：胜方剩余兵力（``max - second``）；并列时为 0；累加时为到达总量。
     - ``previous_owner``：结算前该地块的控制者（``None`` = 中立）。
     - ``previous_army``：结算前该地块的兵力。
@@ -183,11 +191,13 @@ def resolve_battle(arrivals: list[Flight], tile: Tile, tile_index: int = -1) -> 
 
     前置：``arrivals`` 为本刻到达该地块的全部 flight（可为空）。
     计算：
-      1. 按 ``owner`` 求和（到达各方 + 守军：``tile.owner`` 的 ``tile.army``），
-         得到 ``totals: dict[owner, army]``；
+      1. 按 ``owner`` 求和（到达各方 + 守军：有主地块记在 ``tile.owner`` 下，
+         中立地块记在伪 owner :data:`NEUTRAL_OWNER` 下），得到 ``totals: dict[owner, army]``；
       2. 若参与 owner 数 ``<= 1`` → **无战斗**：``winner=None``，
          ``remaining`` 为到达总量（R4.6：友方/自己累加，不设上限）；
-      3. 否则取最大与次大：独大者 ``remaining = max - second``、``winner = 该 owner``；
+         中立空地（``army == 0``）只有到达方参战，属于这一情形；
+      3. 否则取最大与次大：独大者 ``remaining = max - second``、``winner = 该 owner``
+         （``winner == NEUTRAL_OWNER`` 表示中立驻军守住了，不换主）；
          **并列最大 → remaining = 0、winner = None（不占领）**（R4.3）。
     后置：返回 :class:`BattleResult`，**不修改 ``tile``**；
           ``participants`` 与 ``arrivals`` 均按 ``(owner_id, tile_index)`` 升序（R7.3）。
@@ -201,8 +211,12 @@ def resolve_battle(arrivals: list[Flight], tile: Tile, tile_index: int = -1) -> 
     totals: dict[int, int] = {}
     for f in ordered:
         totals[f.owner] = totals.get(f.owner, 0) + f.amount
-    if tile.owner is not None and tile.army > 0:
-        totals[tile.owner] = totals.get(tile.owner, 0) + tile.army
+    if tile.army > 0:
+        # 守军参战（R4.3）：有主地块记在真实 owner 下；中立地块（R3.8：对所有人敌对）
+        # 记在伪 owner ``NEUTRAL_OWNER`` 下，于是"打中立城市"同样按互减结算，
+        # 不会把 40~50 的中立驻军当成累加底数。
+        defender = NEUTRAL_OWNER if tile.owner is None else tile.owner
+        totals[defender] = totals.get(defender, 0) + tile.army
 
     participants = tuple(
         BattleParticipant(owner=owner, army=totals[owner]) for owner in sorted(totals)
@@ -262,6 +276,7 @@ def group_arrivals_by_dst(flights: list[Flight]) -> dict[int, list[Flight]]:
 
 
 __all__ = [
+    "NEUTRAL_OWNER",
     "Flight",
     "EncounterResult",
     "BattleParticipant",

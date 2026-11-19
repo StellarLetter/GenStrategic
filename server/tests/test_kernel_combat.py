@@ -7,6 +7,7 @@ from generals.game import (
     BattleResult,
     Dir,
     Flight,
+    NEUTRAL_OWNER,
     Terrain,
     enqueue_move,
     resolve_battle,
@@ -81,10 +82,58 @@ def test_battle_friendly_arrival_accumulates_r4_6() -> None:
 
 
 def test_battle_neutral_single_arrival_no_fight_r4_6() -> None:
+    """中立**空地**（兵量 0）只有到达方参战 → 无战斗，直接占领（R4.4）。"""
     tile = make_tile(Terrain.PLAIN, army=0, owner=None)
     result = resolve_battle([Flight(owner=0, src=10, dst=99, amount=3)], tile)
     assert result.fought is False
     assert result.remaining == 3
+
+
+# ---------------------------------------------------------------------------
+# R3.8 / R4.3 —— 中立驻军正常防守（互减，不是"累加底数"）
+# ---------------------------------------------------------------------------
+
+
+def test_neutral_garrison_fights_and_is_subtracted_r3_8_r4_3() -> None:
+    """打中立城市：到达 50 对驻军 40 → 攻占，兵力 10（互减，不叠加）。"""
+    tile = make_tile(Terrain.CITY, army=40, owner=None)
+    result = resolve_battle([Flight(owner=0, src=10, dst=99, amount=50)], tile)
+    assert result.fought is True
+    assert result.winner == 0
+    assert result.remaining == 10
+    assert NEUTRAL_OWNER in result.owners
+    assert result.previous_owner is None
+    assert result.previous_army == 40
+
+
+def test_neutral_garrison_holds_when_attack_is_weaker_r3_8_r4_3() -> None:
+    """到达 25 < 驻军 40 → 中立守住了，剩下 15。"""
+    tile = make_tile(Terrain.CITY, army=40, owner=None)
+    result = resolve_battle([Flight(owner=0, src=10, dst=99, amount=25)], tile)
+    assert result.fought is True
+    assert result.winner == NEUTRAL_OWNER
+    assert result.remaining == 15
+
+
+def test_neutral_garrison_tie_zeroes_both_r4_3() -> None:
+    """到达与驻军相等 → 双方归零，不占领（R4.3）。"""
+    tile = make_tile(Terrain.CITY, army=40, owner=None)
+    result = resolve_battle([Flight(owner=0, src=10, dst=99, amount=40)], tile)
+    assert result.winner is None
+    assert result.remaining == 0
+
+
+def test_two_players_versus_neutral_garrison_r4_3() -> None:
+    """两名玩家同时打同一座中立城市：中立驻军仍是独立一方，按最大 - 次大结算。"""
+    tile = make_tile(Terrain.CITY, army=40, owner=None)
+    arrivals = [
+        Flight(owner=0, src=1, dst=9, amount=30),
+        Flight(owner=1, src=2, dst=9, amount=25),
+    ]
+    result = resolve_battle(arrivals, tile)
+    assert result.owners == (NEUTRAL_OWNER, 0, 1) or result.owners == (0, 1, NEUTRAL_OWNER)
+    assert result.winner == NEUTRAL_OWNER
+    assert result.remaining == 10  # 40 - 30
 
 
 def test_battle_is_pure_and_sorted_r4_3_r7_3() -> None:
@@ -256,3 +305,50 @@ def test_battle_result_has_no_tile_mutation_contract_r4_3() -> None:
     result = resolve_battle([Flight(owner=3, src=7, dst=8, amount=50)], tile)
     assert isinstance(result, BattleResult)
     assert tile.army == 40 and tile.owner is None
+
+
+# ---------------------------------------------------------------------------
+# 端到端：打中立城市（R3.8 / R4.3 / R4.4）
+# ---------------------------------------------------------------------------
+
+
+def test_tick_capture_neutral_city_subtracts_garrison_r3_8_r4_4() -> None:
+    """50 兵打 40 兵的中立城市 → 占城后兵力 10（不叠加成 90）。"""
+    state = make_state(size=5, players=(0,))
+    a = state.index(2, 0)
+    b = state.index(2, 1)
+    state.tiles[a] = make_tile(Terrain.PLAIN, army=51, owner=0)
+    state.tiles[b] = make_tile(Terrain.CITY, army=40, owner=None)
+    state.players[0].capital = a
+    for idx in range(state.tile_count):
+        if idx not in (a, b):
+            state.tiles[idx] = make_tile(Terrain.PLAIN, army=0, owner=None)
+    state.tick = 1  # 下一 step = tick 2（Turn 1，不增长）
+
+    enqueue_move(state, 0, a, Dir.RIGHT, 1.0)  # ceil(51*1)=51，cap 50 → 50
+    tick.step(state)
+
+    assert state.tiles[b].owner == 0
+    assert state.tiles[b].army == 50 - 40
+    assert state.tiles[b].terrain == Terrain.CITY
+
+
+def test_tick_weak_attack_leaves_neutral_city_r3_8() -> None:
+    """20 兵打 44 兵的中立城市 → 打不下，城市仍中立且兵力减到 24。"""
+    state = make_state(size=5, players=(0,))
+    a = state.index(2, 2)
+    b = state.index(2, 3)
+    state.tiles[a] = make_tile(Terrain.PLAIN, army=21, owner=0)
+    state.tiles[b] = make_tile(Terrain.CITY, army=44, owner=None)
+    state.players[0].capital = a
+    for idx in range(state.tile_count):
+        if idx not in (a, b):
+            state.tiles[idx] = make_tile(Terrain.PLAIN, army=0, owner=None)
+    state.tick = 1
+
+    enqueue_move(state, 0, a, Dir.RIGHT, 1.0)  # 21 → 20
+    tick.step(state)
+
+    assert state.tiles[b].owner is None
+    assert state.tiles[b].army == 44 - 20
+    assert state.tiles[a].army == 1

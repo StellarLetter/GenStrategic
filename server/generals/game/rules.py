@@ -189,8 +189,10 @@ def apply_capture(
 
     前置：``0 <= dst < size*size``；``owner`` 为已存在的玩家 id。
     行为：
-      * ``dst`` 原本就归 ``owner`` 或为中立 → ``army += amount``（R4.6 累加不设上限）；
-      * ``dst`` 归他人 → 控制者改为 ``owner``，``army = amount``（R4.4：到达兵力 > 0 即占领）；
+      * ``dst`` 原本就归 ``owner`` → ``army += amount``（R4.6 累加不设上限）；
+      * ``dst`` 归他人**或为中立** → 控制者改为 ``owner``，``army = amount``
+        （R4.4：到达兵力 > 0 即占领；``amount`` 是阵地战结算后的剩余兵力，
+        **不与原地驻军累加**——中立驻军同样参战，见 R3.8 / R4.3）；
       * 若 ``dst`` 是他人**王城**（``is_capital`` 且原主 ``capital == dst``）→
         先执行 :func:`inherit_all` 抢占其全部领土（R5.2），并把该王城转成
         "首都转化型城市"（R5.4：新主人不继承王城身份）。
@@ -207,12 +209,12 @@ def apply_capture(
     extra: list[CaptureEvent] = []
     captured_capital = False
 
-    if previous_owner != owner and previous_owner is not None:
-        victim = state.players.get(previous_owner)
+    if previous_owner != owner:
+        # 攻占：兵力 = 阵地战结算后的剩余兵力（R4.4）；中立驻军已在结算里被减掉，不累加。
+        victim = state.players.get(previous_owner) if previous_owner is not None else None
         is_capital_of_victim = (
             victim is not None and tile.is_capital() and victim.capital == dst
         )
-        # 先转这块地的控制权与兵力，再继承其余领土（R5.2）。
         tile.owner = owner
         tile.army = max(0, amount)
         if is_capital_of_victim:
@@ -221,9 +223,8 @@ def apply_capture(
             # R5.4：被攻占的王城转为"首都转化型城市"，新主人不继承王城身份。
             _mark_city_from_capital(tile)
     else:
-        # 自己/中立地块：累加（R4.6）。
+        # 自己地块：累加（R4.6，不设上限）。
         tile.army = tile.army + max(0, amount)
-        tile.owner = owner
 
     event = CaptureEvent(
         tile=dst,
