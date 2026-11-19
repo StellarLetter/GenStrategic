@@ -1,4 +1,4 @@
-"""视野裁剪：把权威 GameState 裁成"某个座位能看到的视图"（R3.5 / R3.6 / C-17 / R6.9）。
+"""视野裁剪：把权威 GameState 裁成"某个座位能看到的视图"（R3.5 / R3.6 / R6.9）。
 
 职责：唯一的裁剪实现，net / ai / 回放都只从这里取可见信息，保证各端一致。
 契约见 docs/INTERFACES.md §1.7；地形编码见 docs/PROTOCOL.md §3.3。
@@ -14,7 +14,7 @@ from .state import GameState, Terrain, Tile
 #: PROTOCOL §3.3 中"首都转化型城市"的渲染码（R5.4）。
 TERRAIN_CITY_FROM_CAPITAL: int = 4
 
-#: 视野外折叠后的两种可见外观：平原（0）与山地（2）（C-17 / R6.9）。
+#: 视野外折叠后的两种可见外观：平原（0）与山地（2）（R6.9）。
 _FOG_PLAIN: int = int(Terrain.PLAIN)
 _FOG_MOUNTAIN: int = int(Terrain.MOUNTAIN)
 
@@ -54,7 +54,7 @@ def _visible_terrain(tile: Tile) -> int:
 
 
 def _fog_terrain(tile: Tile) -> int:
-    """视野外的地形折叠（C-17 / R6.9）。
+    """视野外的地形折叠（R6.9）。
 
     - 山地、普通/中立城市 → ``2``（山地外观）；
     - 平原、首都、**首都转化型城市** → ``0``（平原外观）。
@@ -73,10 +73,10 @@ def project(state: GameState, seat_player: int | None) -> list[TileView]:
     后置：长度为 ``size * size``，按 index 升序（列表下标 == index）。
 
       * **观战者**（``None``）：全图真实信息——``army`` 真实，``terrain`` 为真实编码
-        （0/1/2/3，首都转化型城市给 ``4``）（P-02：观战者全图可见）。
+        （0/1/2/3，首都转化型城市给 ``4``）（R3.10：观战者全图可见）。
       * **视野内**（R3.5：己方地块 ∪ 其 8 相邻）：``army`` 真实；``terrain = 4``
         当且仅当地块是首都转化型城市（R5.4），否则为真实地形编码。
-      * **视野外**（C-17）：``army = None``；``terrain = 2`` 若真实地形为山地或普通城市，
+      * **视野外**（R6.9）：``army = None``；``terrain = 2`` 若真实地形为山地或普通城市，
         否则 ``0``（PLAIN / CAPITAL / 首都转化型城市）。
       * 已出局玩家的 ``seat_player``：视野为空集，因此全部地块走"视野外"分支。
     抛出：无。

@@ -1,4 +1,4 @@
-"""回合/Tick 语义与增长时机（R1.1 / R1.2 / R1.3 / R3.4 / R3.7 / C-01）。"""
+"""回合/Tick 语义与增长时机（R1.1 / R1.2 / R1.3 / R3.4 / R3.7）。"""
 
 from __future__ import annotations
 
@@ -44,8 +44,8 @@ def test_step_on_ended_state_is_noop_r7_4() -> None:
     assert report.ended is True and report.winner == 0
 
 
-def test_city_growth_only_on_half_one_c01() -> None:
-    """首都/城市只在 Turn N.（half=1）增长 +1（R3.4 / R3.7 / C-01）。"""
+def test_city_growth_only_on_half_one_r3_7() -> None:
+    """首都/城市只在 Turn N.（half=1）增长 +1（R3.4 / R3.7）。"""
     state = make_state(size=5, players=(0, 1))
     city = state.index(2, 2)
     state.tiles[city] = make_tile(Terrain.CITY, army=10, owner=0)
@@ -63,7 +63,7 @@ def test_city_growth_only_on_half_one_c01() -> None:
     assert state.tiles[city].army == 11
 
 
-def test_neutral_tiles_do_not_grow_r3_4() -> None:
+def test_neutral_tiles_do_not_grow_r3_8() -> None:
     state = make_state(size=5, players=(0,))
     neutral_city = state.index(2, 2)
     state.tiles[neutral_city] = make_tile(Terrain.CITY, army=44, owner=None)
@@ -73,7 +73,7 @@ def test_neutral_tiles_do_not_grow_r3_4() -> None:
     assert state.tiles[neutral_city].army == 44
 
 
-def test_plain_growth_first_refresh_at_turn_25_dot_r3_4_c01() -> None:
+def test_plain_growth_first_refresh_at_turn_25_dot_r3_4() -> None:
     """平原第一次刷新在 Turn 25.（turn=24, half=1）（BRIEF 增长时机）。"""
     state = make_state(size=5, players=(0,))
     plain = state.index(2, 2)

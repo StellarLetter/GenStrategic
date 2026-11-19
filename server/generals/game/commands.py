@@ -12,12 +12,14 @@ from enum import Enum
 
 from .state import GameState, PlayerState, Terrain
 
-# 与 config 同源，避免两处硬编码漂移（R4.7 / INTERFACES §1.3）。
+# 与 config 同源，避免两处硬编码漂移（R4.7 / R6.6 / INTERFACES §1.3）。
 CHAIN_LIMIT: int = 20
+RATIO_MIN: float = 0.1
+RATIO_MAX: float = 1.0
 
 
 class Dir(Enum):
-    """调兵方向，仅 4 相邻（R4.1 / C-03）。
+    """调兵方向，仅 4 相邻（R4.1）。
 
     ``value`` 就是线协议里的方向字符串（PROTOCOL §3.6：``"up"/"down"/"left"/"right"``），
     因此 ``Dir("up")`` 可直接由帧字段构造。
@@ -70,11 +72,11 @@ def dir_of(sr: int, sc: int, dr: int, dc: int, size: int) -> Dir | None:
 
 @dataclass(frozen=True)
 class MoveRequest:
-    """一条调兵请求（R4.1 / C-02 / C-06）。
+    """一条调兵请求（R4.1 / R6.7）。
 
     - ``src``：起点地块 index。
     - ``dir``：方向（4 相邻）。
-    - ``ratio``：**入队时**的比例，``(0, 1]``（C-06 / R6.7）。
+    - ``ratio``：**入队时**的比例，``(0, 1]``（R6.7）。
     """
 
     src: int
@@ -97,6 +99,8 @@ _CODE_MESSAGES: dict[str, str] = {
     "not_joined": "尚未加入房间",
     "not_started": "对局未开始",
     "not_your_turn": "已出让：玩家已出局或处于投降过渡期",
+    # 说明：``not_owned`` 保留在错误码表中以兼容 PROTOCOL §5，但**入队阶段不再产生**
+    # 它 —— 起点归属改为在发起调兵阶段判定并按 R4.12 作废（R4.11）。
     "not_owned": "起点地块不归你控制",
     "not_adjacent": "方向越界或非 4 相邻",
     "blocked": "目标为山地，不可通行",
@@ -117,7 +121,10 @@ def _coerce_dir(direction: Dir | str) -> Dir:
 
 
 def _coerce_ratio(ratio: float) -> float:
-    """把比例 clamp 到 ``(0, 1]``（C-02）。
+    """把比例 clamp 到 ``[RATIO_MIN, RATIO_MAX]`` = ``[0.1, 1.0]``（R6.6）。
+
+    比例只有这一个取值范围（UI 的 `+`/`-` 步长 10% 也落在这个区间内），
+    越界输入按边界取值而不报错，保证结算确定。
 
     抛出：``CommandError('bad_frame')`` —— ``ratio`` 不是有限数值。
     """
@@ -125,12 +132,12 @@ def _coerce_ratio(ratio: float) -> float:
         value = float(ratio)
     except (TypeError, ValueError) as exc:
         raise CommandError("bad_frame", f"非法比例：{ratio!r}") from exc
-    if value != value:  # NaN
-        raise CommandError("bad_frame", "非法比例：nan")
-    if value > 1.0:
-        return 1.0
-    if value <= 0.0:
-        return 0.01  # 最小有效比例 1%（R6.6：范围 10%–100%，clamp 语义为"不报错、取边界"）
+    if value != value or value in (float("inf"), float("-inf")):  # NaN / ±inf
+        raise CommandError("bad_frame", f"非法比例：{ratio!r}")
+    if value > RATIO_MAX:
+        return RATIO_MAX
+    if value < RATIO_MIN:
+        return RATIO_MIN
     return value
 
 
@@ -149,20 +156,27 @@ def enqueue_move(
     direction: Dir | str,
     ratio: float,
 ) -> None:
-    """入队一条调兵请求（INTERFACES §1.3）。
+    """入队一条调兵请求（INTERFACES §1.3，R4.11 / R7.2）。
+
+    **预调兵**（R4.11）：入队时**不校验起点归属** —— 起点既可以是当前归该玩家控制的
+    地块，也可以是该玩家调兵链中任意请求的目标地块；合法性一律推迟到
+    **发起调兵阶段**判定（R7.2，见 :func:`generals.game.tick.launch_moves`），
+    届时起点已失守的请求按 R4.12 作废。
 
     前置（依次校验，任一不满足抛对应错误码）：
-      * ``not state.ended``；
-      * 玩家存在、``alive`` 且不在投降过渡期（R5.5 / C-08）；
-      * ``src`` 在界内且归该玩家控制（R3.1）；
-      * ``direction`` 为 4 方向之一且不越界（R4.1 / C-03）→ ``not_adjacent``；
-      * 目标地块真实地形非山地（R4.9）→ ``blocked``；
-      * 调兵链长度 < ``CHAIN_LIMIT`` → ``chain_full``（R4.7）。
+      * ``not state.ended`` → ``not_started``；
+      * 玩家存在（``not_joined``）、``alive`` 且不在投降过渡期（R5.5）→ ``not_your_turn``；
+      * ``src`` 是界内整数（R2.1）→ ``bad_frame``；
+      * ``direction`` 为 4 方向之一且不越界（R4.1）→ ``not_adjacent``；
+      * 目标地块**真实**地形非山地（R4.9）→ ``blocked``；
+      * 调兵链长度 < ``CHAIN_LIMIT`` → ``chain_full``（R4.7 / R6.11）。
     后置：``state.players[player_id].chain`` 末尾追加一条 :class:`MoveRequest`；
-          ``ratio`` 已 clamp 到 ``(0, 1]``（C-02）。
+          ``ratio`` 已 clamp 到 ``(0, 1]``（R6.7）。
     抛出：:class:`CommandError`，``code`` ∈
-          ``{not_started, not_your_turn, not_owned, not_adjacent, blocked, chain_full, bad_frame}``。
-    说明：0 兵力起点也允许入队（C-02，每地块兵力恒 ``>=0``，结算时得 0 兵力请求）。
+          ``{not_started, not_joined, not_your_turn, bad_frame, not_adjacent, blocked, chain_full}``。
+          **不产生 ``not_owned``**（R4.11：入队不校验起点归属）。
+    说明：兵力 1 的地块也可以入队 —— 结算时按 R4.2 算出 ``<= 0`` 的量，
+          再由 R4.12 作废并下发原因。
     """
     if state.ended:
         raise CommandError("not_started", "对局已结束")
@@ -173,9 +187,7 @@ def enqueue_move(
     if not isinstance(src, int) or isinstance(src, bool):
         raise CommandError("bad_frame", f"非法起点：{src!r}")
     if not (0 <= src < state.tile_count):
-        raise CommandError("not_owned", f"起点越界：{src}")
-    if state.tiles[src].owner != player_id:
-        raise CommandError("not_owned", f"地块 {src} 不归玩家 {player_id} 控制")
+        raise CommandError("bad_frame", f"起点越界：{src}")
 
     d = _coerce_dir(direction)
     dst = state.step_index(src, d)
@@ -228,12 +240,15 @@ def chain_snapshot(state: GameState, player_id: int) -> list[dict]:
 
 
 def launched_amount(army: int, ratio: float) -> int:
-    """实际移动兵力（R4.2 / C-02 / C-07）。
+    """实际移动兵力（R4.2 / R7.2）。
 
     公式：``min(ceil(army * ratio), army - 1)``，再夹到 ``>= 0``。
-    前置：``army >= 0``，``ratio`` 可为任意值（内部 clamp 到 ``(0, 1]``）。
-    后置：``army == 0`` → ``0``；``army >= 1`` → ``1 <= 结果 <= army - 1``。
-    说明：``army == 0`` 时 ``army - 1 == -1``，故结果取 0（C-02 允许 0 兵力请求）。
+
+    前置：``army >= 0``（地块兵力恒非负，R3.9）；``ratio`` 任意，非 ``(0, 1]`` 时内部 clamp。
+    后置：返回**原始计算值**，可能为 ``0``（``army <= 1`` 时必然为 ``0``）；
+          **不做"是否作废"的判定** —— ``<= 0`` 的语义由调用方按 R4.12 处理
+          （见 :func:`generals.game.tick.launch_moves`：``<= 0`` ⇒ ``reason="zero_army"`` 作废）。
+    说明：R4.2 明确"兵力为 1 的地块无法调兵"，因此 ``army == 1`` 时返回 ``0``。
     """
     if army <= 0:
         return 0

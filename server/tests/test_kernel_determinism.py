@@ -1,4 +1,4 @@
-"""确定性与不变量：无随机、无时间、集合遍历有序、地块总数守恒（R7.3 / R2.1 / C-03）。"""
+"""确定性与不变量：无随机、无时间、集合遍历有序、地块总数守恒（R7.3 / R2.1 / R3.5）。"""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ def test_kernel_uses_no_module_level_random_r7_3() -> None:
 
 def _play(seed: int, ticks: int = 6) -> list[tuple[int, int, int | None]]:
     """用给定种子跑一段固定剧本，返回终局指纹。"""
-    st = generate(14, 4, random.Random(seed))
+    st = generate(4, random.Random(seed))
     rng = random.Random(seed * 31 + 7)
     for _ in range(ticks):
         for pid in sorted(st.players):
@@ -69,7 +69,7 @@ def test_different_seeds_usually_differ_r7_3() -> None:
 
 
 def test_tile_count_conserved_r2_1() -> None:
-    st = generate(12, 4, random.Random(5))
+    st = generate(4, random.Random(5))
     total = st.tile_count
     for _ in range(5):
         tick.step(st)
@@ -77,14 +77,14 @@ def test_tile_count_conserved_r2_1() -> None:
 
 
 def test_owned_tiles_sorted_ascending_r7_3() -> None:
-    st = generate(12, 4, random.Random(6))
+    st = generate(4, random.Random(6))
     for pid in sorted(st.players):
         owned = st.owned_tiles(pid)
         assert owned == sorted(owned)
 
 
 def test_leaderboard_deterministic_order_r7_3() -> None:
-    st = generate(12, 4, random.Random(8))
+    st = generate(4, random.Random(8))
     first = st.leaderboard()
     second = st.leaderboard()
     assert first == second
@@ -141,7 +141,7 @@ def test_no_wall_clock_dependency_in_step_r7_3() -> None:
 
 def test_mountain_blocks_expansion_invariant_r3_5() -> None:
     """任何时刻山地都不会被占领（R3.5 不变量）。"""
-    st = generate(14, 4, random.Random(77))
+    st = generate(4, random.Random(77))
     for _ in range(4):
         tick.step(st)
         for tile in st.tiles:

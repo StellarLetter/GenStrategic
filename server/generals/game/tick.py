@@ -1,4 +1,4 @@
-"""单刻结算编排：严格按 R7.1 / C-10 的六阶段顺序推进一个 Tick。
+"""单刻结算编排：严格按 R7.1 的六阶段顺序推进一个 Tick。
 
 职责：把 combat / rules 的原语串成一步结算，并产出可广播的 :class:`TickReport`。
 契约见 docs/INTERFACES.md §1.6。
@@ -31,6 +31,35 @@ from .rules import (
 from .state import GameState, turn_of
 
 
+@dataclass(frozen=True)
+class DroppedRequest:
+    """一条在发起调兵阶段**作废**的调兵请求（R4.12 / R7.2）。
+
+    字段：
+      * ``player_id``：发起该请求的玩家（链的拥有者）；
+      * ``src`` / ``dir`` / ``ratio``：原请求内容（``dir`` 为协议字符串，便于直接下发）；
+      * ``reason``：作废原因 —— ``"src_lost"``（起点已不归该玩家，R4.11/R4.12①）
+        或 ``"zero_army"``（按 R4.2 算出调兵量 ``<= 0``，R4.12①）；
+      * ``cascade``：因本请求被**级联**作废的下游请求条数（R4.12③，不含自己）。
+    """
+
+    player_id: int
+    src: int
+    dir: str
+    ratio: float
+    reason: str
+    cascade: int = 0
+
+    def sort_key(self) -> tuple[int, int]:
+        """确定性排序键：``(player_id, src)``（R7.3）。"""
+        return (self.player_id, self.src)
+
+
+#: 作废原因常量（R4.12），供 net 层映射到 PROTOCOL 事件。
+DROP_SRC_LOST = "src_lost"
+DROP_ZERO_ARMY = "zero_army"
+
+
 @dataclass
 class TickReport:
     """一个 Tick 的完整结算报告（INTERFACES §1.6）。
@@ -44,6 +73,7 @@ class TickReport:
     half: int
     growth: list[GrowthEvent] = field(default_factory=list)
     launched: list[Flight] = field(default_factory=list)
+    dropped: list[DroppedRequest] = field(default_factory=list)
     encounters: list[EncounterResult] = field(default_factory=list)
     battles: list[BattleResult] = field(default_factory=list)
     captures: list[CaptureEvent] = field(default_factory=list)
@@ -51,6 +81,13 @@ class TickReport:
     changed: set[int] = field(default_factory=set)
     ended: bool = False
     winner: int | None = None
+
+    def dropped_for(self, player_id: int) -> list[DroppedRequest]:
+        """该玩家本刻作废的请求（按 ``src`` 升序，R7.3），供下发"作废"提示。"""
+        return sorted(
+            (d for d in self.dropped if d.player_id == player_id),
+            key=lambda d: d.sort_key(),
+        )
 
     def owners_changed(self) -> list[CaptureEvent]:
         """只挑"控制者真的变了"的攻占事件（R4.4），供 net 广播 captured 事件。"""
@@ -74,15 +111,15 @@ class TickReport:
 
 
 # ---------------------------------------------------------------------------
-# 阶段 2：发起调兵（R4.7 / R7.2 / C-05）
+# 阶段 2：发起调兵（R4.7 / R7.2）
 # ---------------------------------------------------------------------------
 
 
 def _pop_requests(state: GameState) -> list[tuple[int, MoveRequest]]:
-    """按玩家 id 升序，每名存活玩家 FIFO 弹出 1 条请求（R4.7 / C-05）。
+    """按玩家 id 升序，每名存活玩家 FIFO 弹出 1 条请求（R4.7 / R6.3）。
 
-    后置：返回 ``[(player_id, request), ...]``，按 ``(player_id, src)`` 升序（R7.3）。
-    说明：投降过渡期内的玩家仍会消费链——但链在投降瞬间已被清空（R5.5 / C-08），
+    后置：返回 ``[(player_id, request), ...]``，按 ``player_id`` 升序（R7.3）。
+    说明：投降过渡期内的玩家仍会消费链——但链在投降瞬间已被清空（R5.5），
           故实际不会弹出任何请求。
     """
     popped: list[tuple[int, MoveRequest]] = []
@@ -94,32 +131,135 @@ def _pop_requests(state: GameState) -> list[tuple[int, MoveRequest]]:
     return popped
 
 
-def launch_moves(state: GameState) -> list[Flight]:
-    """阶段 2「根据请求发起调兵」——**原子阶段**（R7.2 / R4.7 / C-05 / C-10）。
+def _target_of(state: GameState, req: MoveRequest) -> int | None:
+    """请求的目标地块 index；方向越界返回 ``None``（防御，R4.1）。"""
+    return state.step_index(req.src, req.dir)
 
-    前置：``state`` 已进入本刻结算。
-    行为：按玩家 id 升序，各从调兵链 FIFO 弹 1 条；从起点扣除
-          ``min(ceil(army*ratio), army-1)``（R4.2 / C-02 / C-07）并生成 :class:`Flight`。
-          **本阶段不更新任何占领、不结算战斗**（R7.2）。
-          起点兵量为 1 或 0 时得 ``amount == 0``：该请求被消费但不产生飞行兵力。
-    后置：返回按 ``(owner_id, dst)`` 升序的 flight 列表；``state.tiles[src].army`` 已扣减。
-    抛出：无（请求合法性已在 :func:`commands.enqueue_move` 阶段校验）。
+
+def _cascade_drop(state: GameState, player_id: int, doomed_dst: int) -> int:
+    """级联作废链中所有「起点 == 本请求目标」的请求（R4.12③）。
+
+    递归传递：被作废的请求若还有下游（起点 == 它的目标），继续作废。
+    **链允许成环（R4.11）**，故用 visited 集合（按起点）防死循环：
+    同一起点只扩散一次，环会被自然剪断。
+
+    前置：``doomed_dst`` 是刚作废请求的目标地块 index。
+    后置：链中所有以此为起点/间接下游的请求被移除；返回被级联作废的**条数**（不含自己）。
+    抛出：无。
     """
+    player = state.players.get(player_id)
+    if player is None or not player.chain:
+        return 0
+
+    doomed_srcs: set[int] = set()
+    frontier = [doomed_dst]
+    while frontier:
+        src_to_kill = frontier.pop()
+        if src_to_kill in doomed_srcs:
+            continue  # 环：已处理过，直接剪断（R4.11 链允许环）
+        doomed_srcs.add(src_to_kill)
+        for req in player.chain:
+            if req.src != src_to_kill:
+                continue
+            nxt = _target_of(state, req)
+            if nxt is not None and nxt not in doomed_srcs:
+                frontier.append(nxt)
+
+    if not doomed_srcs:
+        return 0
+    keep: list[MoveRequest] = []
+    removed = 0
+    for req in player.chain:
+        if req.src in doomed_srcs:
+            removed += 1
+        else:
+            keep.append(req)
+    player.chain[:] = keep
+    return removed
+
+
+def launch_moves(
+    state: GameState, dropped: list[DroppedRequest] | None = None
+) -> list[Flight]:
+    """阶段 2「根据请求发起调兵」——**原子阶段**（R7.2 / R4.7 / R4.11 / R4.12）。
+
+    前置：``state`` 已进入本刻结算；``dropped`` 为可选收集列表（``None`` 时自建、不返回）。
+    行为：按玩家 id 升序，各从调兵链 FIFO 弹 1 条，并按 R4.11 / R4.12 判定：
+      1. 起点 ``req.src`` 已不归该玩家 → ``reason="src_lost"`` 作废；
+      2. 否则按 R4.2 算 ``launched_amount``，``<= 0`` → ``reason="zero_army"`` 作废；
+      3. 作废时：本条不产生任何移动、本 Tick 不再为该玩家弹下一条（R4.12②）、
+         并级联作废链中起点等于本条目标的请求（递归，``cascade`` 记条数，R4.12③）；
+      4. 合法请求从起点扣除兵力，生成 :class:`Flight`（``src`` 保持原值，R7.2）。
+      **本阶段不更新任何占领、不结算战斗**（R7.2）。
+    后置：返回按 ``(owner, dst, src)`` 升序的 flight 列表；``state.tiles[src].army`` 已扣减；
+          ``dropped`` 按 ``(player_id, src)`` 升序（R7.3）。
+    抛出：无（入队阶段的校验见 :func:`commands.enqueue_move`）。
+    """
+    if dropped is None:
+        dropped = []
     flights: list[Flight] = []
     for pid, req in _pop_requests(state):
         src_tile = state.tiles[req.src]
-        dst = state.step_index(req.src, req.dir)
-        if dst is None:  # 防御：理论上入队时已校验（R4.1）
+        dst = _target_of(state, req)
+        if dst is None:  # 防御：入队时已校验（R4.1）
+            dropped.append(
+                DroppedRequest(
+                    player_id=pid,
+                    src=req.src,
+                    dir=req.dir.value,
+                    ratio=req.ratio,
+                    reason=DROP_SRC_LOST,
+                )
+            )
             continue
         if state.tiles[dst].is_mountain():  # 防御：入队时已 blocked（R4.9）
+            dropped.append(
+                DroppedRequest(
+                    player_id=pid,
+                    src=req.src,
+                    dir=req.dir.value,
+                    ratio=req.ratio,
+                    reason=DROP_ZERO_ARMY,
+                )
+            )
             continue
+
+        # ---- R4.11 / R4.12①：起点归属在**此时**才判定 ----------------------
+        if src_tile.owner != pid:
+            cascade = _cascade_drop(state, pid, dst)
+            dropped.append(
+                DroppedRequest(
+                    player_id=pid,
+                    src=req.src,
+                    dir=req.dir.value,
+                    ratio=req.ratio,
+                    reason=DROP_SRC_LOST,
+                    cascade=cascade,
+                )
+            )
+            continue  # R4.12②：本 Tick 不再为该玩家弹下一条
+
         amount = launched_amount(src_tile.army, req.ratio)
         if amount <= 0:
-            # C-02：允许 0 兵力请求 —— 请求被消费，但不产生飞行兵力。
+            # R4.2：结果 <= 0 的请求不处理；R4.12 作废 + 级联。
+            cascade = _cascade_drop(state, pid, dst)
+            dropped.append(
+                DroppedRequest(
+                    player_id=pid,
+                    src=req.src,
+                    dir=req.dir.value,
+                    ratio=req.ratio,
+                    reason=DROP_ZERO_ARMY,
+                    cascade=cascade,
+                )
+            )
             continue
+
         src_tile.army -= amount
         flights.append(Flight(owner=pid, src=req.src, dst=dst, amount=amount))
+
     flights.sort(key=lambda f: (f.owner, f.dst, f.src))
+    dropped.sort(key=lambda d: d.sort_key())
     return flights
 
 
@@ -139,16 +279,16 @@ def _apply_dst_result(
     """把一块地的阵地战结果落到权威状态上（阶段 4 判定 + 阶段 5 更新占领）。
 
     规则映射：
-      * 无战斗（参战 owner ≤ 1）→ 累加（R4.6 / C-14）；若 dst 中立则到达方占领（R4.4）。
+      * 无战斗（参战 owner ≤ 1）→ 累加（R4.6）；若 dst 中立则到达方占领（R4.4）。
       * 并列最大 → 兵力归零、**不占领**，原控制者保留（R4.3）。
       * 独大 → 剩余兵力 > 0 即攻占（R4.4）；攻占他人王城触发全继承（R5.2）与
-        王城转"首都转化型城市"（C-09）。
+        王城转"首都转化型城市"（R5.4）。
     """
     dst_tile = state.tiles[dst]
     participants = result.participants
 
     if not result.fought:
-        # --- 无战斗：单一 owner 的累加（R4.6 / C-14）----------------------
+        # --- 无战斗：单一 owner 的累加（R4.6）----------------------
         if result.remaining <= 0:
             return
         if dst_tile.owner is None:
@@ -162,7 +302,7 @@ def _apply_dst_result(
                 changed.add(item.tile)
             changed.add(dst)
         else:
-            # 友方/自己地块：累加（R4.6 / C-14）。
+            # 友方/自己地块：累加（R4.6）。
             dst_tile.army += result.remaining
             changed.add(dst)
         return
@@ -187,10 +327,10 @@ def _apply_dst_result(
 
 
 def _should_end(state: GameState) -> bool:
-    """对局是否满足结束条件（R7.4 / C-12）。
+    """对局是否满足结束条件（R7.4）。
 
-    判定：**参与过对局的玩家数 >= 2**（即房间里死了不止一人），且 有地玩家数 ``<= 1``
-    且没有别的 ``alive`` 玩家还能再抢地。
+    判定：**参与过对局的玩家数 >= 2**，且 有地玩家数 ``<= 1`` 且没有别的 ``alive``
+    玩家还能再抢地（即除那名有地玩家外，剩下的全是已出局玩家）。
 
     说明：单人测试局 / 单人房（``len(players) == 1``）永远不结束 —— 这类局要能一直跑
     （增长、调兵、战斗都要能验证；AI_API §2.1 的离线自对弈也依赖它）。真正的多人终局
@@ -207,16 +347,17 @@ def _should_end(state: GameState) -> bool:
 
 
 def step(state: GameState) -> TickReport:
-    """推进 1 个 Tick，严格按 R7.1 / C-10 的六阶段顺序（INTERFACES §1.6）。
+    """推进 1 个 Tick，严格按 R7.1 的六阶段顺序（INTERFACES §1.6）。
 
     前置：``not state.ended``（已结束时直接返回"空报告"，``tick`` 不变）。
     后置：
       * ``state.tick += 1`` 在本刻**结算之前**完成：本刻结算依据的是"刚进入的这一刻"
-        的 ``(turn, half)``（R1.2 / C-01）。开局 ``tick=0`` 即 ``Turn 0``，第一次
+        的 ``(turn, half)``（R1.2 / R3.7）。开局 ``tick=0`` 即 ``Turn 0``，第一次
         ``step()`` 落入 ``tick=1`` = ``Turn 0.``，因此**第一次 step 就会增长**；
       * 报告按阶段顺序给出：增长 → 发起调兵 → 遭遇战 → 阵地战 → 更新占领 → 停止抵抗；
+      * ``report.dropped`` 列出本刻按 R4.12 作废的请求（含级联条数）；
       * ``report.changed`` 汇总本刻所有发生变化的地块 index；
-      * ``report.ended`` / ``report.winner`` 反映 R7.4 / C-12 的结束判定。
+      * ``report.ended`` / ``report.winner`` 反映 R7.4 的结束判定。
     确定性：无随机、无时间依赖；相同输入必然相同输出（R7.3）。
     抛出：无。
     """
@@ -228,23 +369,24 @@ def step(state: GameState) -> TickReport:
 
     tile_total = len(state.tiles)  # 用于收尾断言地块总数不变（R2.1）
 
-    # 本刻的时钟：先推进 tick，再按新 (turn, half) 结算（R1.2 / C-01）。
+    # 本刻的时钟：先推进 tick，再按新 (turn, half) 结算（R1.2 / R3.7）。
     state.tick += 1
     turn, half = turn_of(state.tick)
 
     changed: set[int] = set()
 
-    # ---- 阶段 1：兵力增长（R3.4 / R3.7 / C-01）----------------------------
+    # ---- 阶段 1：兵力增长（R3.4 / R3.7）-----------------------------------
     growth = apply_growth(state)
     for ev in growth:
         changed.add(ev.tile)  # 兵力变化也要下发（PROTOCOL §3.3）
 
-    # ---- 阶段 2：根据请求发起调兵（R7.2 / R4.7 / C-05）---------------------
-    launched = launch_moves(state)
+    # ---- 阶段 2：根据请求发起调兵（R7.2 / R4.7 / R4.11 / R4.12）------------
+    dropped: list[DroppedRequest] = []
+    launched = launch_moves(state, dropped)
     for f in launched:
         changed.add(f.src)  # 起点兵力已扣减
 
-    # ---- 阶段 3：结算遭遇战（R4.5 / C-04 / C-10 / C-18）--------------------
+    # ---- 阶段 3：结算遭遇战（R4.5 / R7.2）--------------------
     survivors, encounters = resolve_encounters(launched)
     for enc in encounters:
         t1, t2 = enc.involved_tiles
@@ -261,7 +403,7 @@ def step(state: GameState) -> TickReport:
         battles.append(result)
         _apply_dst_result(state, dst, arrivals, result, captures, changed)
 
-    # ---- 阶段 6：停止抵抗（R5.3 / R5.5 / C-08 / C-09）---------------------
+    # ---- 阶段 6：停止抵抗（R5.3 / R5.5）----------------------------------
     expired = tick_surrender(state)
     # 投降期满玩家在转中立之前的全部地块快照（按 index 升序，R7.3）。
     expiring_tiles: dict[int, list[int]] = {
@@ -269,10 +411,10 @@ def step(state: GameState) -> TickReport:
     }
     eliminations = check_eliminations(state)
     for pid in expired:
-        # C-08：期满地块全部转中立（兵力保留），控制者变化必须下发。
+        # R5.5：期满地块全部转中立（兵力完整保留），控制者变化必须下发。
         changed.update(expiring_tiles.get(pid, []))
 
-    # ---- 结束判定（R7.4 / C-12）------------------------------------------
+    # ---- 结束判定（R7.4）-------------------------------------------------
     # 只能在六阶段**全部走完**后判定：否则"本刻开始时只剩 1 名有地玩家"的中间态会在
     # 增长之前就把对局判死（此时还可能有兵力在飞）。
     # 单人局（``len(players) < 2``）永不结束，便于离线驱动/单测（AI_API §2.1）。
@@ -288,6 +430,7 @@ def step(state: GameState) -> TickReport:
         half=half,
         growth=growth,
         launched=launched,
+        dropped=dropped,
         encounters=encounters,
         battles=battles,
         captures=captures,
@@ -298,4 +441,11 @@ def step(state: GameState) -> TickReport:
     )
 
 
-__all__ = ["TickReport", "step", "launch_moves"]
+__all__ = [
+    "TickReport",
+    "DroppedRequest",
+    "DROP_SRC_LOST",
+    "DROP_ZERO_ARMY",
+    "step",
+    "launch_moves",
+]

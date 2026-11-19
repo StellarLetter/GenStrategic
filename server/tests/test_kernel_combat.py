@@ -1,4 +1,4 @@
-"""战斗结算：遭遇战与阵地战（R4.3 / R4.4 / R4.5 / R4.6 / R4.7 / R4.9 / C-04 / C-10 / C-14 / C-18）。"""
+"""战斗结算：遭遇战与阵地战（R4.3 / R4.4 / R4.5 / R4.6 / R4.7 / R4.9 / R4.10 / R7.1 / R7.2）。"""
 
 from __future__ import annotations
 
@@ -65,8 +65,8 @@ def test_battle_defender_alone_against_attacker_r4_3() -> None:
     assert result.previous_army == 5
 
 
-def test_battle_friendly_arrival_accumulates_r4_6_c14() -> None:
-    """友方/自己地块：目标兵力 = 原兵力 + 到达兵力，不设上限（R4.6 / C-14）。"""
+def test_battle_friendly_arrival_accumulates_r4_6() -> None:
+    """友方/自己地块：目标兵力 = 原兵力 + 到达兵力，不设上限（R4.6）。"""
     tile = make_tile(Terrain.PLAIN, army=1000000, owner=0)
     arrivals = [
         Flight(owner=0, src=10, dst=99, amount=7),
@@ -103,7 +103,7 @@ def test_battle_is_pure_and_sorted_r4_3_r7_3() -> None:
 
 
 # ---------------------------------------------------------------------------
-# R4.5 / C-04 / C-10 / C-18 —— 遭遇战
+# R4.5 —— 遭遇战
 # ---------------------------------------------------------------------------
 
 
@@ -141,8 +141,8 @@ def test_encounter_does_not_touch_unpaired_flights_r4_5() -> None:
     assert encounters == []
 
 
-def test_encounter_three_way_not_possible_c18() -> None:
-    """C-18：4 相邻语义下只有双方对穿，不存在三方遭遇战：
+def test_encounter_three_way_not_possible_r4_5() -> None:
+    """R4.5：4 相邻语义下只有双方对穿，不存在三方遭遇战：
     同一对地块上的第三条 flight 只按 dst 归组进阵地战，不参与遭遇战。"""
     a = Flight(owner=0, src=1, dst=6, amount=5)
     b = Flight(owner=1, src=6, dst=1, amount=3)
@@ -155,12 +155,12 @@ def test_encounter_three_way_not_possible_c18() -> None:
 
 
 # ---------------------------------------------------------------------------
-# 端到端：一个 Tick 内遭遇战 + 阵地战（R7.1 / C-10）
+# 端到端：一个 Tick 内遭遇战 + 阵地战（R7.1 / R7.2）
 # ---------------------------------------------------------------------------
 
 
-def test_encounter_then_battle_in_one_tick_r7_1_c10() -> None:
-    """两条对穿请求先遭遇战抵消，胜方剩余兵力再进阵地战（C-10）。"""
+def test_encounter_then_battle_in_one_tick_r7_1() -> None:
+    """两条对穿请求先遭遇战抵消，胜方剩余兵力再进阵地战（R7.1 阶段顺序）。"""
     state = make_state(size=5, players=(0, 1))
     # 0 号玩家：A(0) 与 B(1) 相邻；1 号玩家同理 —— 用首都改造成三连排
     a = state.index(2, 0)
@@ -231,8 +231,8 @@ def test_mountain_target_never_receives_flight_r4_9() -> None:
     assert state.tiles[a].army == 9
 
 
-def test_capture_zeroes_defender_visible_army_c13() -> None:
-    """C-13：战败方立刻看到该地块兵力为 0（被占领时剩余兵力归胜方）。"""
+def test_capture_zeroes_defender_visible_army_r4_10() -> None:
+    """R4.10：战败方立刻看到该地块兵力为 0（被占领时剩余兵力归胜方）。"""
     state = make_state(size=5, players=(0, 1))
     a = state.index(2, 0)
     b = state.index(2, 1)

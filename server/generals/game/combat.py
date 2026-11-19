@@ -1,4 +1,4 @@
-"""战斗结算纯函数：遭遇战（R4.5 / C-04 / C-10）与阵地战（R4.3 / R4.4）。
+"""战斗结算纯函数：遭遇战（R4.5 / R7.2）与阵地战（R4.3 / R4.4）。
 
 职责：只做"给定兵力/守军 → 谁赢、剩多少"的纯计算，不读写 ``GameState``。
 契约见 docs/INTERFACES.md §1.4。
@@ -19,7 +19,7 @@ class Flight:
     - ``owner``：势力 player_id。
     - ``src``：出发地块 index（**保持出发时的原值**，即便遭遇战后继续飞向目标也不改写）。
     - ``dst``：目标地块 index。
-    - ``amount``：剩余兵力，``>= 1``（0 兵力请求在发起阶段就被丢弃，见 R4.2 / C-02）。
+    - ``amount``：剩余兵力，``>= 1``（0 兵力请求在发起阶段就被丢弃，见 R4.2）。
     """
 
     owner: int
@@ -94,7 +94,7 @@ class BattleResult:
 
 
 def _pair_flights(flights: list[Flight]) -> tuple[list[tuple[Flight, Flight]], list[Flight]]:
-    """把 flights 分成"成对（a→b 与 b→a）"与"落单"两组（R4.5 / C-18）。
+    """把 flights 分成"成对（a→b 与 b→a）"与"落单"两组（R4.5）。
 
     配对规则：按 ``(owner_id, src, dst)`` 排序后贪心匹配——对每条未消费的 flight ``f``，
     找一条 ``dst == f.src and src == f.dst`` 的未消费 flight ``g``（同 owner 或不同 owner
@@ -122,7 +122,7 @@ def _pair_flights(flights: list[Flight]) -> tuple[list[tuple[Flight, Flight]], l
 def resolve_encounters(
     flights: list[Flight],
 ) -> tuple[list[Flight], list[EncounterResult]]:
-    """结算遭遇战（R4.5 / C-04 / C-10 / C-18）。
+    """结算遭遇战（R4.5 / R7.2）。
 
     前置：``flights`` 为本刻第 2 阶段产出的全部飞行兵力。
     后置：返回 ``(继续飞行的 flights, 交锋记录)``——
@@ -179,14 +179,14 @@ def resolve_encounters(
 
 
 def resolve_battle(arrivals: list[Flight], tile: Tile, tile_index: int = -1) -> BattleResult:
-    """结算某个目标地块的阵地战（R4.3 / R4.4 / R4.6 / C-14）。
+    """结算某个目标地块的阵地战（R4.3 / R4.4 / R4.6）。
 
     前置：``arrivals`` 为本刻到达该地块的全部 flight（可为空）。
     计算：
       1. 按 ``owner`` 求和（到达各方 + 守军：``tile.owner`` 的 ``tile.army``），
          得到 ``totals: dict[owner, army]``；
       2. 若参与 owner 数 ``<= 1`` → **无战斗**：``winner=None``，
-         ``remaining`` 为到达总量（R4.6：友方/自己累加，不设上限，C-14）；
+         ``remaining`` 为到达总量（R4.6：友方/自己累加，不设上限）；
       3. 否则取最大与次大：独大者 ``remaining = max - second``、``winner = 该 owner``；
          **并列最大 → remaining = 0、winner = None（不占领）**（R4.3）。
     后置：返回 :class:`BattleResult`，**不修改 ``tile``**；
@@ -209,7 +209,7 @@ def resolve_battle(arrivals: list[Flight], tile: Tile, tile_index: int = -1) -> 
     )
 
     if len(totals) <= 1:
-        # 无战斗：友方/自己地块累加（R4.6 / C-14）。
+        # 无战斗：友方/自己地块累加（R4.6）。
         total_arrivals = sum(f.amount for f in ordered)
         return BattleResult(
             tile=tile_index,

@@ -1,4 +1,4 @@
-"""王城继承、投降、出局与胜负（R5.1..R5.5 / R7.4 / C-08 / C-09 / C-11 / C-12 / C-13）。"""
+"""王城继承、投降、出局与胜负（R5.1..R5.5 / R7.4 / R4.10 / R6.8）。"""
 
 from __future__ import annotations
 
@@ -30,11 +30,11 @@ def _duel(size: int = 5) -> tuple[object, int, int]:
 
 
 # ---------------------------------------------------------------------------
-# R5.2 / C-11 —— 攻下王城 = 全境继承
+# R5.2 —— 攻下王城 = 全境继承
 # ---------------------------------------------------------------------------
 
 
-def test_conquer_capital_inherits_all_tiles_r5_2_c11() -> None:
+def test_conquer_capital_inherits_all_tiles_r5_2() -> None:
     state, a, b = _duel()
     far = state.index(0, 0)
     mid = state.index(0, 1)
@@ -46,25 +46,25 @@ def test_conquer_capital_inherits_all_tiles_r5_2_c11() -> None:
     enqueue_move(state, 0, a, Dir.RIGHT, 1.0)  # 40 → b（守军 1）→ 剩 39 占领
     report = tick.step(state)
 
-    # 全部 1 号地块归 0 号（R5.2 / C-11）
+    # 全部 1 号地块归 0 号（R5.2）
     assert state.land_count(1) == 0
     for idx in (b, far, mid):
         assert state.tiles[idx].owner == 0
     # 兵力减半（向下取整，至少 1）
     assert state.tiles[far].army == max(8 // 2, 1) == 4
     assert state.tiles[mid].army == max(11 // 2, 1) == 5
-    # 被攻下的王城变"首都转化型城市"（C-09）
+    # 被攻下的王城变"首都转化型城市"（R5.4）
     assert state.tiles[b].terrain is Terrain.CITY
     assert state.tiles[b].city_from_capital is True
-    # 胜方不因此获得王城资格：0 号王城仍是 a（BRIEF：王城数为 1）
+    # 胜方不因此获得王城资格：0 号王城仍是 a（R5.1：有且仅有一座王城）
     assert state.players[0].capital == a
     # 报告里的继承事件被记录
     assert len(report.captures) >= 2
     assert any(ev.captured_capital for ev in report.captures)
 
 
-def test_captured_capital_becomes_ordinary_city_r5_4_c09() -> None:
-    """C-09：被攻下的王城此后按普通城市处理（+1 增长），不再具王城地位。"""
+def test_captured_capital_becomes_ordinary_city_r5_4() -> None:
+    """R5.4：被攻下的王城此后按普通城市处理（+1 增长），不再具王城地位。"""
     state, a, b = _duel()
     state.tiles[a].army = 21
     state.tick = 1
@@ -108,11 +108,11 @@ def test_own_capital_capture_by_third_party_only_inherits_victim_r5_2() -> None:
 
 
 # ---------------------------------------------------------------------------
-# R5.3 / R5.5 / C-08 —— 投降
+# R5.3 / R5.5 —— 投降
 # ---------------------------------------------------------------------------
 
 
-def test_surrender_clears_chain_and_blocks_operations_r5_5_c08() -> None:
+def test_surrender_clears_chain_and_blocks_operations_r5_5() -> None:
     state = make_state(size=5, players=(0, 1))
     cap = state.players[0].capital
     assert cap is not None
@@ -135,7 +135,7 @@ def test_surrender_clears_chain_and_blocks_operations_r5_5_c08() -> None:
         assert state.players[0].chain == []
 
 
-def test_surrender_counts_down_40_ticks_r5_3_c08() -> None:
+def test_surrender_counts_down_40_ticks_r5_5() -> None:
     state = make_state(size=5, players=(0, 1, 2))
     begin_surrender(state, 0)
     assert state.players[0].surrender_ticks_left == SURRENDER_TICKS == 40
@@ -151,7 +151,7 @@ def test_surrender_counts_down_40_ticks_r5_3_c08() -> None:
     assert state.players[0].surrender_ticks_left is None
 
 
-def test_tiles_go_neutral_on_surrender_expiry_keeping_army_c08() -> None:
+def test_tiles_go_neutral_on_surrender_expiry_keeping_army_r5_5() -> None:
     state = make_state(size=5, players=(0, 1, 2))
     cap = state.players[0].capital
     assert cap is not None
@@ -165,13 +165,13 @@ def test_tiles_go_neutral_on_surrender_expiry_keeping_army_c08() -> None:
 
     assert state.tiles[cap].owner is None
     assert state.tiles[other].owner is None
-    assert state.tiles[other].army == 13  # 兵力保留（C-08）
+    assert state.tiles[other].army == 13  # 兵力完整保留（R5.5）
     assert state.tiles[cap].terrain is Terrain.CITY  # 王城转普通城市
     assert state.tiles[cap].city_from_capital is True
     assert cap in report.changed
 
 
-def test_surrendering_player_is_eliminated_at_expiry_r5_5_c08() -> None:
+def test_surrendering_player_is_eliminated_at_expiry_r5_3() -> None:
     state = make_state(size=5, players=(0, 1, 2))
     begin_surrender(state, 0)
     state.players[0].surrender_ticks_left = 1
@@ -182,11 +182,11 @@ def test_surrendering_player_is_eliminated_at_expiry_r5_5_c08() -> None:
 
 
 # ---------------------------------------------------------------------------
-# R7.4 / C-12 —— 出局与胜负
+# R7.4 —— 出局与胜负
 # ---------------------------------------------------------------------------
 
 
-def test_last_standing_player_wins_r7_4_c12() -> None:
+def test_last_standing_player_wins_r7_4() -> None:
     state, a, b = _duel()
     state.tiles[a].army = 21
     state.tick = 1
@@ -213,21 +213,21 @@ def test_step_returns_empty_report_once_ended_r7_4() -> None:
 
 
 # ---------------------------------------------------------------------------
-# R3.3 / C-16 —— 中立城市与地块计数
+# R3.3 / R6.8 —— 中立城市与地块计数
 # ---------------------------------------------------------------------------
 
 
-def test_land_count_includes_capital_and_cities_r5_1_c16() -> None:
+def test_land_count_includes_capital_and_cities_r6_8() -> None:
     state = make_state(size=5, players=(0, 1))
     cap = state.players[0].capital
     assert cap is not None
     city = state.index(2, 2)
     state.tiles[city] = make_tile(Terrain.CITY, army=40, owner=0)
-    assert state.land_count(0) == 2  # 王城 + 城市都算（C-16）
+    assert state.land_count(0) == 2  # 王城 + 城市都算（R6.8）
     assert state.land_count(99) == 0
 
 
-def test_army_total_sums_owned_tiles_r3_8() -> None:
+def test_army_total_sums_owned_tiles_r6_8() -> None:
     state = make_state(size=5, players=(0, 1))
     cap = state.players[0].capital
     assert cap is not None

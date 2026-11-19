@@ -17,9 +17,9 @@ class Terrain(IntEnum):
     """地块真实地形（R2.2）。
 
     - ``PLAIN``    平原
-    - ``CAPITAL``  王城（仅开局时存在；被攻占后转 CITY，见 C-09）
+    - ``CAPITAL``  王城（仅开局时存在；被攻占后转 CITY，见 R5.4）
     - ``MOUNTAIN`` 山地（不可通行，R4.9）
-    - ``CITY``     城市（含"首都转化型城市"，二者逻辑等同，见 R5.4 / C-09）
+    - ``CITY``     城市（含"首都转化型城市"，二者逻辑等同，见 R5.4）
     """
 
     PLAIN = 0
@@ -40,9 +40,10 @@ class Tile:
 
     - ``terrain``：真实地形（R2.2）。
     - ``army``：兵力，``>= 0``（R3.1）。
-    - ``owner``：控制者 player_id；``None`` = 中立（R3.1 / C-03）。
-    - ``city_from_capital``：内部字段，标记"由首都转化而来的城市"（R5.4 / C-09）。
-      为 ``True`` 时 ``terrain`` 必为 ``CITY``，且视野外渲染为平原（C-17）。
+    - ``owner``：控制者 player_id；``None`` = 中立（R3.1 / R3.8）。中立地块保有兵力、
+      对任何玩家敌对，但**不发起调兵、不增长**（R3.8）。
+    - ``city_from_capital``：内部字段，标记"由首都转化而来的城市"（R5.4）。
+      为 ``True`` 时 ``terrain`` 必为 ``CITY``，且视野外渲染为平原（R6.9）。
     """
 
     terrain: Terrain = Terrain.PLAIN
@@ -59,7 +60,7 @@ class Tile:
         return int(self.terrain) in _CITY_LIKE_VALUES
 
     def is_capital(self) -> bool:
-        """真实地形是否王城（R5.1；被攻占后转 CITY，见 C-09）。"""
+        """真实地形是否王城（R5.1；被攻占后转 CITY，见 R5.4）。"""
         return int(self.terrain) == int(Terrain.CAPITAL)
 
     def is_plain(self) -> bool:
@@ -67,7 +68,7 @@ class Tile:
         return int(self.terrain) == int(Terrain.PLAIN)
 
     def is_ordinary_city(self) -> bool:
-        """是否普通城市（非"首都转化型城市"），用于 C-17 视野外折叠判定。"""
+        """是否普通城市（非"首都转化型城市"），用于 R6.9 视野外折叠判定。"""
         return int(self.terrain) == int(Terrain.CITY) and not self.city_from_capital
 
 
@@ -78,7 +79,7 @@ class PlayerState:
     - ``capital``：王城 index；王城被攻占/转化后为 ``None``（R5.1 / R5.2）。
     - ``chain``：调兵链，FIFO；每 Tick 至多消费 1 条（R4.7 / R6.3）。
       元素类型为 :class:`generals.game.commands.MoveRequest`（延迟导入避免循环依赖）。
-    - ``surrender_ticks_left``：投降过渡期剩余 Tick（C-08）；``None`` = 未投降。
+    - ``surrender_ticks_left``：投降过渡期剩余 Tick（R5.5）；``None`` = 未投降。
     """
 
     player_id: int
@@ -92,7 +93,7 @@ class PlayerState:
     # --- 便捷判定 ---------------------------------------------------------
 
     def is_surrendering(self) -> bool:
-        """是否处于投降过渡期（C-08：仍增长、仍参战，只是不能操作）。"""
+        """是否处于投降过渡期（R5.5：仍增长、仍参战，只是不能操作）。"""
         return self.surrender_ticks_left is not None
 
     def can_operate(self) -> bool:
@@ -156,7 +157,7 @@ class GameState:
         return divmod(idx, self.size)
 
     def neighbours4(self, idx: int) -> list[int]:
-        """4 相邻（上/下/左/右）的地块 index 列表（C-03）。
+        """4 相邻（上/下/左/右）的地块 index 列表（R4.1）。
 
         前置：``0 <= idx < size*size``。
         后置：按 ``[上, 下, 左, 右]`` 顺序返回，越界的方向自动过滤（不 wrap-around）。
@@ -175,7 +176,7 @@ class GameState:
         return out
 
     def neighbours8(self, idx: int) -> list[int]:
-        """8 相邻（含斜角）的地块 index 列表（R3.5 视野用；C-03 明确写 8 相邻才算）。
+        """8 相邻（含斜角）的地块 index 列表（R3.5 视野用；R4.1 明确写 8 相邻才算）。
 
         前置：``0 <= idx < size*size``。
         后置：按行优先（上排→中排→下排，行内左→右）返回，越界方向自动过滤。
@@ -210,7 +211,7 @@ class GameState:
     # --- 纯查询 -----------------------------------------------------------
 
     def visible_tiles(self, player_id: int) -> set[int]:
-        """该玩家的视野集合（R3.5 / C-03）。
+        """该玩家的视野集合（R3.5）。
 
         前置：无。
         后置：己方全部地块 ∪ 其 8 相邻地块；玩家已出局（``alive=False``）或不存在时返回空集。
@@ -231,11 +232,16 @@ class GameState:
         return sum(t.army for t in self.tiles if t.owner == player_id)
 
     def land_count(self, player_id: int) -> int:
-        """该玩家控制地块数（C-16：含首都与城市）。"""
+        """该玩家控制地块数（R6.8：含首都与城市）。"""
         return sum(1 for t in self.tiles if t.owner == player_id)
 
     def owned_tiles(self, player_id: int) -> list[int]:
-        """该玩家控制地块 index 列表，按 index 升序（R7.3）。"""
+        """该玩家控制地块 index 列表，按 index 升序（R7.3）。
+
+        说明：``owner is None`` 的地块是**中立**（R3.8）——中立不是玩家，永远
+        不出现在任何玩家的 ``owned_tiles`` / ``land_count`` 里；中立地块保有兵力、
+        对任何玩家敌对，只在被攻打时按 R4.3 被动参与战斗。
+        """
         return [i for i, t in enumerate(self.tiles) if t.owner == player_id]
 
     def alive_players(self) -> list[int]:
@@ -243,7 +249,7 @@ class GameState:
         return sorted(pid for pid, p in self.players.items() if p.alive)
 
     def players_with_land(self) -> list[int]:
-        """``alive`` 且拥有至少 1 块地的玩家 id 升序列表（R7.4 / C-12）。"""
+        """``alive`` 且拥有至少 1 块地的玩家 id 升序列表（R7.4）。"""
         return [pid for pid in self.alive_players() if self.land_count(pid) > 0]
 
     def leaderboard(self) -> list[dict]:

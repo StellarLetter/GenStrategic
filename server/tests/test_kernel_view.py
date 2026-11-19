@@ -1,4 +1,4 @@
-"""视野与迷雾、快照投影、增量下发（R6.1..R6.9 / C-17 / R3.5 / R3.6）。"""
+"""视野与迷雾、快照投影、增量下发（R6.1..R6.9 / R3.5 / R3.6 / R3.10）。"""
 
 from __future__ import annotations
 
@@ -27,25 +27,25 @@ def _map_with_city_from_capital() -> tuple[object, int, int]:
 
 
 # ---------------------------------------------------------------------------
-# C-17 / R6.9 —— 迷雾：视野外 arm y 隐藏
+# R3.6 / R6.9 —— 迷雾：视野外兵力隐藏
 # ---------------------------------------------------------------------------
 
 
-def test_out_of_vision_army_is_hidden_c17() -> None:
+def test_out_of_vision_army_is_hidden_r3_6() -> None:
     state = make_state(size=9, players=(0, 1))
     cap = state.players[0].capital
     assert cap is not None
     v0 = project(state, 0)
     for view in v0:
         assert isinstance(view, TileView)
-    # 视野外的地块 army 必须为 None（C-17）
+    # 视野外的地块 army 必须为 None（R3.6）
     visible = set(state.visible_tiles(0))
     for view in v0:
         if view.index not in visible:
             assert view.army is None
 
 
-def test_in_vision_army_is_real_c17() -> None:
+def test_in_vision_army_is_real_r3_5() -> None:
     state = make_state(size=9, players=(0, 1))
     cap = state.players[0].capital
     assert cap is not None
@@ -55,7 +55,7 @@ def test_in_vision_army_is_real_c17() -> None:
     assert v0[cap].owner == 0
 
 
-def test_spectator_sees_full_truth_c17() -> None:
+def test_spectator_sees_full_truth_r3_10() -> None:
     state = make_state(size=5, players=(0, 1))
     state.tiles[state.index(2, 2)] = make_tile(Terrain.CITY, army=44, owner=None)
     views = project(state, None)
@@ -64,11 +64,11 @@ def test_spectator_sees_full_truth_c17() -> None:
 
 
 # ---------------------------------------------------------------------------
-# R3.5 / R3.6 / C-17 —— 视野外的地形折叠
+# R3.6 / R6.9 —— 视野外的地形折叠
 # ---------------------------------------------------------------------------
 
 
-def test_fog_folds_terrain_r3_6_c17() -> None:
+def test_fog_folds_terrain_r6_9() -> None:
     """视野外：山地与普通城市折叠为同一"不可通行/未知"码；平原与王城折叠为平原码。"""
     state = make_state(size=11, players=(0, 1))
     cap = state.players[0].capital
@@ -96,7 +96,7 @@ def test_city_from_capital_visible_code_r5_4() -> None:
     assert views[plain].terrain == 0
 
 
-def test_city_from_capital_fogged_folds_to_plain_c17() -> None:
+def test_city_from_capital_fogged_folds_to_plain_r5_4() -> None:
     state = make_state(size=11, players=(0, 1))
     far = state.index(10, 10)
     state.tiles[far] = make_tile(
