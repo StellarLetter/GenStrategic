@@ -87,19 +87,27 @@ class Dir(Enum):
 class MoveRequest:
     src: int
     dir: Dir
-    ratio: float        # (0, 1]，入队时的比例（R6.7）
+    ratio: float        # RATIOS 之一（10%..100%，步长 10%），入队时量化（R6.6 / R6.7）
 
 CHAIN_LIMIT = 20
+RATIO_MIN = 0.1
+RATIO_MAX = 1.0
+RATIO_STEP = 0.1
+RATIOS = (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)   # 真人与 AI 共用（R6.6）
 
 class CommandError(Exception):
     code: str           # 见 PROTOCOL §5
+
+def quantize_ratio(ratio: float) -> float:
+    """就近量化到 RATIOS 之一（R6.6）；NaN/±inf/非数值 抛 CommandError('bad_frame')。"""
 
 def enqueue_move(state, player_id, src, direction, ratio) -> None:
     """入队一条调兵请求（R4.11）。
     前置：对局进行中、玩家可操作、src 是界内整数、方向未越界、目标非山地（R4.9）。
           **不校验 src 归属** —— 预调兵允许 src 是链中任意请求的目标；合法性
           推迟到发起调兵阶段判定（见 §1.6）。
-    后置：chain 末尾追加；ratio clamp 到 (0, 1]；超过 CHAIN_LIMIT 抛 CommandError('chain_full')。
+    后置：chain 末尾追加；ratio 经 quantize_ratio 量化到 10% 整数倍（R6.6）；
+          超过 CHAIN_LIMIT 抛 CommandError('chain_full')。
     抛出：CommandError，code ∈ {not_started, not_joined, not_your_turn, bad_frame,
           not_adjacent, blocked, chain_full}；**不产生 not_owned**。"""
 
@@ -271,6 +279,8 @@ class Action:
     op: Literal["move", "clear", "pop", "select"]
     src: int = 0; dir: str = ""; ratio: float = 1.0; tile: int = 0
 
+RATIOS: tuple[float, ...]  # 与真人一致的调兵比例十档（R6.6），Action.ratio 经 to_command() 量化
+
 def register(name: str) -> Callable[[type], type]: ...   # registry.register
 def get(name: str) -> type[Agent]: ...
 ```
@@ -297,7 +307,7 @@ export function applyFrame(state: ClientState, frame: ServerFrame): ClientState 
 
 // chains.ts
 export function toggleSelection(ch: ChainState, idx: number): ChainState  // R6.6 比例状态机
-export function pushMove(ch, dir, size, isBlocked): PushResult            // R6.2 / R4.11 预调兵
+export function pushMove(ch, dir, size, isBlocked): PushResult            // R6.2 / R4.11 预调兵；成功后比例回 100%（R6.6）
 
 // geometry.ts
 export function neighbours4(idx: number, size: number): number[]
