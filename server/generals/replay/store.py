@@ -117,11 +117,15 @@ class ReplayStore:
         limits: ReplayLimits | None = None,
         keep: int = REPLAY_KEEP,
         enabled: bool = True,
+        index_enabled: bool = True,
     ) -> None:
         self.directory: Path = Path(directory).expanduser().resolve() if directory else default_replay_dir()
         self.limits: ReplayLimits = limits or ReplayLimits()
         self.keep: int = max(1, int(keep))
         self.enabled: bool = bool(enabled)
+        #: 是否维护 `index.json`。多进程写同一目录时（`tools/ai_arena.py --replay-dir`）
+        #: 各 worker 设为 `False`（各自原子写回放文件、不碰索引），主进程最后 `list()` 重建一次。
+        self.index_enabled: bool = bool(index_enabled)
         #: 正在录制的回放（id → recorder）。**它们的回放不可读**。
         self._active: dict[str, ReplayRecorder] = {}
 
@@ -204,8 +208,9 @@ class ReplayStore:
             raise ReplayError(f"cannot write replay {payload['id']}: {exc}") from exc
         self._active.pop(payload["id"], None)
         summary = summarize(payload, bytes_=len(text.encode("utf-8")))
-        self._index_insert(summary)
-        self._prune()
+        if self.index_enabled:
+            self._index_insert(summary)
+            self._prune()
         return summary
 
     def abort(self, recorder: ReplayRecorder, *, reason: str = "aborted") -> dict | None:
@@ -243,7 +248,7 @@ class ReplayStore:
             return []
         rows = self._read_index()
         live = [row for row in rows if (self.directory / f"{row.get('id', '')}.json").is_file()]
-        if len(live) != len(rows):
+        if self.index_enabled and len(live) != len(rows):
             self._write_index(live)
         return live[: max(1, int(limit))]
 
@@ -289,7 +294,8 @@ class ReplayStore:
                 path.unlink()
             except OSError as exc:
                 raise ReplayError(f"cannot delete replay {rid}: {exc}") from exc
-        self._write_index([row for row in self._read_index() if row.get("id") != rid])
+        if self.index_enabled:
+            self._write_index([row for row in self._read_index() if row.get("id") != rid])
         return existed
 
     def info(self) -> dict:
@@ -306,6 +312,17 @@ class ReplayStore:
             "active": self.active_ids(),
             "count": len(self.list(limit=self.keep)),
         }
+
+    def rebuild(self) -> list[dict]:
+        """按目录里的回放文件重建索引并返回摘要行（新的在前）。
+
+        前置：无。
+        后置：无论 `index_enabled` 与否都会扫目录并写索引（供多进程写同一目录后收尾用，
+              例如 `tools/ai_arena.py --replay-dir`）；单份坏文件只跳过它。
+        抛出：无。
+        """
+        rows = self._rebuild_index()
+        return rows
 
     # ------------------------------------------------------------------
     # 索引

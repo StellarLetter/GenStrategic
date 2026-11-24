@@ -180,6 +180,93 @@ class ReplayRecorder:
             self.truncated = True
 
     # ------------------------------------------------------------------
+    # 离线工具用的整局帧序列（与线协议字段一致，见 docs/REPLAY.md §2.1）
+    # ------------------------------------------------------------------
+    def record_open(self, state: GameState) -> None:
+        """录制开局三帧：`game_start` → 全量 `tiles`（观战者视角）→ `leaderboard`。
+
+        前置：`state` 已 `attach`（`tools/ai_arena.py` 这类**不经房间**的离线对局用）。
+        后置：帧序与 `Room.start()` 一致（`turn` 0 帧由随后的 `record_tick()` 给出）。
+        抛出：无。
+        """
+        if self.truncated:
+            return
+        try:
+            players = [
+                {
+                    "playerId": int(pid),
+                    "name": state.players[pid].name,
+                    "color": state.players[pid].color,
+                    "seat": index,
+                }
+                for index, pid in enumerate(sorted(state.players))
+            ]
+            self.record_frame({"t": "game_start", "size": int(state.size), "players": players})
+            self.record_tiles(state, full=True)
+            self.record_frame(self._leaderboard_frame(state))
+        except Exception:  # noqa: BLE001
+            self.truncated = True
+
+    def record_tick(self, state: GameState) -> None:
+        """录制一刻：`turn` → `tiles`（增量）→ `leaderboard`（顺序同 `Room._advance`）。
+
+        前置：`state` 已 `attach` 且本刻已结算（`state.tick` 即本刻序号）。
+        后置：与房间广播的三类帧同序同字段；无地块变化时不产生 `tiles` 条目。
+        抛出：无。
+        """
+        if self.truncated:
+            return
+        try:
+            turn, half = turn_of(state.tick)
+            self.record_frame({"t": "turn", "turn": int(turn), "half": int(half)})
+            self.record_tiles(state)
+            self.record_frame(self._leaderboard_frame(state))
+        except Exception:  # noqa: BLE001
+            self.truncated = True
+
+    def record_close(self, state: GameState) -> None:
+        """录制终局两帧：`game_over` → `event{kind:"game_over"}`。
+
+        前置：`state` 已 `attach`（自然终局时 `state.ended` 为真）。
+        后置：与 `Room._advance` 的终局帧一致（`winner` 可为 `null`）。
+        抛出：无。
+        """
+        if self.truncated:
+            return
+        try:
+            turn, _half = turn_of(state.tick)
+            winner = None if state.winner is None else int(state.winner)
+            self.record_frame({"t": "game_over", "winner": winner, "turn": int(turn)})
+            who = (
+                state.players[winner].name
+                if winner is not None and winner in state.players
+                else None
+            )
+            self.record_frame(
+                {"t": "event", "kind": "game_over", "turn": int(turn), "who": who, "target": None}
+            )
+        except Exception:  # noqa: BLE001
+            self.truncated = True
+
+    @staticmethod
+    def _leaderboard_frame(state: GameState) -> dict:
+        """构造 `leaderboard` 帧（PROTOCOL §3.5 字段，按 `playerId` 升序，R7.3）。"""
+        rows = [
+            {
+                "playerId": int(pid),
+                "name": state.players[pid].name,
+                "color": state.players[pid].color,
+                "army": int(state.army_total(pid)),
+                "land": int(state.land_count(pid)),
+                "alive": bool(state.players[pid].alive),
+                "surrenderIn": getattr(state.players[pid], "surrender_ticks_left", None),
+                "star": 0,
+            }
+            for pid in sorted(state.players)
+        ]
+        return {"t": "leaderboard", "rows": rows}
+
+    # ------------------------------------------------------------------
     # AI 调试条目（策略侧 `generals.ai.log`，见 docs/AI_API.md §11）
     # ------------------------------------------------------------------
     def _append_ai(self, entry: dict) -> None:

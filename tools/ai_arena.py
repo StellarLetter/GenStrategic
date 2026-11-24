@@ -4,6 +4,7 @@
     python .dispatch/lead/arena.py --a greedy --b sample-greedy --games 40 --swap
     python .dispatch/lead/arena.py --a aegis --b greedy,random,sample-greedy --games 30 --workers 14
     python .dispatch/lead/arena.py --a aegis --b greedy --games 1 --trace
+    python .dispatch/lead/arena.py --a aegis --b cosmos-apex --games 20 --replay-dir .dispatch\\replays
 
 设计要点
 --------
@@ -11,6 +12,9 @@
 * 指令走 `game.commands.enqueue_move` 这条真人与 AI 共用的校验路径；非法/被拒都计入 `rejects`。
 * 策略异常计入 `errors`（线上会被吞掉当"本刻不操作"，这里同样不中断对局）。
 * 地图由 `mapgen.generate(player_count=2, rng=Random(seed))` 生成 ⇒ 边长按 R2.3 公式 12..18。
+* `--replay-dir <目录>` 时每局都留一份回放（格式与线上完全一致，见 `docs/REPLAY.md`）：
+  策略的 `generals.ai.log()`、动作、被拒指令、异常都会进去，事后可用 `tools/replay.py` 复盘。
+  多进程写同一目录是安全的（各 worker 原子写自己的文件、不碰 `index.json`，主进程收尾重建索引）。
 """
 
 from __future__ import annotations
@@ -27,15 +31,17 @@ from multiprocessing import Pool
 from pathlib import Path
 from typing import Any
 
-REPO = Path(__file__).resolve().parents[2]
+REPO = Path(__file__).resolve().parents[1]
 if str(REPO / "server") not in sys.path:
     sys.path.insert(0, str(REPO / "server"))
 
 from generals.ai import make_agent, to_observation  # noqa: E402
+from generals.ai.debug import capture  # noqa: E402
 from generals.ai.loader import StrategyLoader  # noqa: E402
 from generals.ai.runner import spec_from_state  # noqa: E402
 from generals.game import commands, mapgen, tick  # noqa: E402
 from generals.game.commands import CommandError  # noqa: E402
+from generals.replay import ReplayStore  # noqa: E402
 
 _READY = {"done": False}
 
@@ -84,6 +90,8 @@ class MatchResult:
     err_sample: tuple[str, str] = ("", "")
     max_ms: tuple[float, float] = (0.0, 0.0)
     timeline: list[list[int]] = field(default_factory=list)
+    #: `--replay-dir` 生效时的回放 id（空串 = 本局没录回放，见 docs/REPLAY.md）。
+    replay_id: str = ""
 
     @property
     def winner_name(self) -> str | None:
@@ -96,12 +104,34 @@ def _count_cities(state: Any, pid: int) -> int:
     return sum(1 for t in state.tiles if t.owner == pid and t.is_city_like())
 
 
-def run_match(job: tuple[str, str, int, int, bool, tuple[str, ...]]) -> MatchResult:
-    a_name, b_name, seed, max_ticks, trace, extra = job
+def run_match(job: tuple[str, str, int, int, bool, tuple[str, ...], str]) -> MatchResult:
+    a_name, b_name, seed, max_ticks, trace, extra, replay_dir = job
     load_strategies(extra)
 
     state = mapgen.generate(player_count=2, rng=random.Random(seed))
     res = MatchResult(a=a_name, b=b_name, seed=seed, size=state.size)
+
+    # 回放（可选）：与线上同一套 `ReplayStore` / `ReplayRecorder`（docs/REPLAY.md）。
+    # 多进程各写各的文件，因此关掉索引维护；主进程收尾时 `rebuild()` 一次。
+    recorder = None
+    store = None
+    if replay_dir:
+        store = ReplayStore(replay_dir, keep=10**9, index_enabled=False)
+        recorder = store.begin(
+            room_id=f"arena-{a_name}-vs-{b_name}-{seed}",
+            seed=seed,
+            size=state.size,
+            tick_ms=500,
+            players=[
+                {"playerId": 0, "seat": 0, "name": a_name, "color": "red", "bot": a_name,
+                 "autopilot": None},
+                {"playerId": 1, "seat": 1, "name": b_name, "color": "blue", "bot": b_name,
+                 "autopilot": None},
+            ],
+        )
+        if recorder is not None:
+            recorder.attach(state)
+            recorder.record_open(state)
 
     agents: dict[int, Any] = {}
     for pid, name in ((0, a_name), (1, b_name)):
@@ -113,10 +143,14 @@ def run_match(job: tuple[str, str, int, int, bool, tuple[str, ...]]) -> MatchRes
             return res
 
     spec = spec_from_state(state)
+    names = {0: a_name, 1: b_name}
     for pid in (0, 1):
         try:
-            agents[pid].reset(spec)
+            with capture(_sink(recorder, pid, names[pid])):
+                agents[pid].reset(spec)
         except Exception as exc:  # noqa: BLE001
+            if recorder is not None:
+                recorder.record_ai_error(pid, error=exc, seat=pid, strategy=names[pid])
             res.err_sample = (
                 res.err_sample[0] or f"reset {type(exc).__name__}: {exc}"
             ) if pid == 0 else (res.err_sample[0], f"reset {type(exc).__name__}: {exc}")
@@ -135,11 +169,14 @@ def run_match(job: tuple[str, str, int, int, bool, tuple[str, ...]]) -> MatchRes
             t0 = time.perf_counter()
             try:
                 obs = to_observation(state, pid)
-                action = agents[pid].act(obs)
+                with capture(_sink(recorder, pid, names[pid])):
+                    action = agents[pid].act(obs)
             except Exception as exc:  # noqa: BLE001
                 errors[pid] += 1
                 if not errs[pid]:
                     errs[pid] = f"{type(exc).__name__}: {exc}"
+                if recorder is not None:
+                    recorder.record_ai_error(pid, error=exc, seat=pid, strategy=names[pid])
                 continue
             finally:
                 dt = (time.perf_counter() - t0) * 1000.0
@@ -153,7 +190,11 @@ def run_match(job: tuple[str, str, int, int, bool, tuple[str, ...]]) -> MatchRes
                 rejects[pid] += 1
                 if not errs[pid]:
                     errs[pid] = f"bad action: {exc}"
+                if recorder is not None:
+                    recorder.record_ai_error(pid, error=exc, seat=pid, strategy=names[pid])
                 continue
+            if recorder is not None:
+                recorder.record_ai_action(pid, action=cmd, seat=pid, strategy=names[pid])
             try:
                 if cmd["op"] == "move":
                     commands.enqueue_move(state, pid, cmd["from"], cmd["dir"], cmd["ratio"])
@@ -161,13 +202,21 @@ def run_match(job: tuple[str, str, int, int, bool, tuple[str, ...]]) -> MatchRes
                     commands.clear_chain(state, pid)
                 elif cmd["op"] == "pop":
                     commands.pop_chain(state, pid)
-            except CommandError:
+            except CommandError as exc:
                 rejects[pid] += 1
+                if recorder is not None:
+                    recorder.record_reject(
+                        pid, op=str(cmd.get("op", "")), seq=0, code=getattr(exc, "code", "bad_frame")
+                    )
             except Exception as exc:  # noqa: BLE001
                 errors[pid] += 1
                 if not errs[pid]:
                     errs[pid] = f"{type(exc).__name__}: {exc}"
+                if recorder is not None:
+                    recorder.record_ai_error(pid, error=exc, seat=pid, strategy=names[pid])
         report = tick.step(state)
+        if recorder is not None:
+            recorder.record_tick(state)
         if trace and (state.tick % 10 == 0 or state.ended):
             res.timeline.append(
                 [
@@ -208,7 +257,27 @@ def run_match(job: tuple[str, str, int, int, bool, tuple[str, ...]]) -> MatchRes
                 close()
         except Exception:  # noqa: BLE001
             pass
+    if store is not None and recorder is not None:
+        if state.ended:
+            recorder.record_close(state)
+        res.replay_id = store.save(recorder, reason="ended" if state.ended else "timeout")["id"]
     return res
+
+
+def _sink(recorder: Any, pid: int, strategy: str) -> Any:
+    """给某个座位构造日志 sink（`recorder is None` 时返回 `None` = 静默丢弃）。
+
+    前置：`recorder` 为 `ReplayRecorder` 或 `None`。
+    后置：返回可交给 `generals.ai.debug.capture()` 的上下文管理器（`None` 亦可）。
+    抛出：无。
+    """
+    if recorder is None:
+        return None
+
+    def sink(level: str, text: str) -> None:
+        recorder.record_ai_log(pid, text=text, level=level, seat=pid, strategy=strategy)
+
+    return sink
 
 
 # ---------------------------------------------------------------------------
@@ -216,14 +285,14 @@ def run_match(job: tuple[str, str, int, int, bool, tuple[str, ...]]) -> MatchRes
 # ---------------------------------------------------------------------------
 
 
-def plan_jobs(pairs: list[tuple[str, str]], games: int, seed0: int, swap: bool, max_ticks: int, trace: bool, extra: tuple[str, ...]):
+def plan_jobs(pairs: list[tuple[str, str]], games: int, seed0: int, swap: bool, max_ticks: int, trace: bool, extra: tuple[str, ...], replay_dir: str = ""):
     jobs = []
     for a, b in pairs:
         for i in range(games):
             seed = seed0 + i
-            jobs.append((a, b, seed, max_ticks, trace, extra))
+            jobs.append((a, b, seed, max_ticks, trace, extra, replay_dir))
             if swap:
-                jobs.append((b, a, seed + 100000, max_ticks, trace, extra))
+                jobs.append((b, a, seed + 100000, max_ticks, trace, extra, replay_dir))
     return jobs
 
 
@@ -278,6 +347,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--trace", action="store_true", help="记录每 10 Tick 的态势")
     ap.add_argument("--extra", default="", help="额外策略模块路径（逗号分隔）")
     ap.add_argument("--json", default="", help="把明细写到该 json")
+    ap.add_argument(
+        "--replay-dir",
+        default="",
+        help="每局都录一份回放到这个目录（格式同线上，见 docs/REPLAY.md；用 tools/replay.py 复盘）",
+    )
     args = ap.parse_args(argv)
 
     extra = tuple(p for p in args.extra.split(",") if p)
@@ -288,7 +362,7 @@ def main(argv: list[str] | None = None) -> int:
     alist = [s for s in args.a.split(",") if s]
     blist = [s for s in args.b.split(",") if s]
     pairs = [(a, b) for a in alist for b in blist]
-    jobs = plan_jobs(pairs, args.games, args.seed0, args.swap, args.max_ticks, args.trace, extra)
+    jobs = plan_jobs(pairs, args.games, args.seed0, args.swap, args.max_ticks, args.trace, extra, args.replay_dir)
 
     t0 = time.perf_counter()
     results: list[MatchResult] = []
@@ -334,6 +408,11 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(row, ensure_ascii=False))
 
     print(f"[arena] {len(jobs)} games in {dt:.1f}s ({dt / max(1, len(jobs)):.3f}s/game, workers={args.workers})")
+    if args.replay_dir:
+        # 多进程各写各的回放文件、不维护索引；这里统一重建一次（docs/REPLAY.md §3）。
+        rows_now = ReplayStore(args.replay_dir).rebuild()
+        print(f"[arena] {len(rows_now)} replays -> {Path(args.replay_dir).resolve()}"
+              f"（用 tools/replay.py list 查看）")
     if args.trace:
         for r in results:
             print(f"--- {r.a} vs {r.b} seed={r.seed} size={r.size} winner={r.winner_name} {r.reason}@{r.ticks}")
