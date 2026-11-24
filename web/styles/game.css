@@ -62,7 +62,8 @@
 
 #start-button,
 #surrender-button,
-#fullscreen-button {
+#fullscreen-button,
+#replay-button {
   position: fixed;
   padding: 10px 26px;
   font-size: 17px;
@@ -106,6 +107,24 @@
   color: #777777;
   background: #cfcfcf;
   cursor: not-allowed;
+}
+
+/* 回放入口（每局自动录制的回放列表）：再往右一格，与全屏按钮同一行。
+   它是链接，不是按钮，所以只借用按钮的观感。 */
+#replay-button {
+  top: 12px;
+  left: 50%;
+  transform: translateX(calc(-50% + 258px));
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+
+#replay-button:hover {
+  color: #ffffff;
+  background: var(--accent);
 }
 
 #start-button[hidden],

@@ -16,6 +16,7 @@ export default defineConfig({
       input: {
         main: 'index.html',
         waiting: 'waiting.html',
+        replay: 'replay.html',
       },
     },
   },

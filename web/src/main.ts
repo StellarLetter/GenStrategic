@@ -76,6 +76,16 @@ const fullscreenButton = document.createElement('button');
 fullscreenButton.id = 'fullscreen-button';
 page.appendChild(fullscreenButton);
 
+// 回放入口（docs/REPLAY.md §5.1）：每局都自动录制，这里只是开一个列表面板。
+const replayButton = document.createElement('a');
+replayButton.id = 'replay-button';
+replayButton.href = '/replay.html';
+replayButton.target = '_blank';
+replayButton.rel = 'noopener';
+replayButton.textContent = '回放';
+replayButton.title = '查看对局回放（每局自动保存）';
+page.appendChild(replayButton);
+
 /** 浏览器是否提供 Fullscreen API（不支持时按钮 disabled，并用 title 说明）。 */
 const FULLSCREEN_SUPPORTED = typeof document.documentElement.requestFullscreen === 'function';
 if (!FULLSCREEN_SUPPORTED) {
@@ -113,6 +123,7 @@ const autopilot = new AutopilotPanel(page);
 makeDraggable(turnCounter.element);
 makeDraggable(surrenderButton);
 makeDraggable(fullscreenButton);
+makeDraggable(replayButton);
 makeDraggable(leaderboard.element);
 makeDraggable(chat.element, { handle: chat.dragHandle });
 makeDraggable(autopilot.element);

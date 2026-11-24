@@ -1,5 +1,5 @@
-﻿# 全量校验（PowerShell）。用法：  .\scripts\test.ps1
-# 依次执行：后端 pytest → 前端类型检查 → 前端构建 → 端到端冒烟
+# 全量校验（PowerShell）。用法：  .\scripts\test.ps1
+# 依次执行：后端 pytest → 前端类型检查 → 前端构建 → 协议级端到端 → 回放页面端到端
 param(
     [switch]$SkipE2E
 )
@@ -27,6 +27,8 @@ try {
 
     if (-not $SkipE2E) {
         Step '端到端冒烟' { & $py scripts\e2e_smoke.py --port 8123 --ticks 20 }
+        # 回放：自造样本回放 → 起服务 → 真浏览器播放并断言（docs/REPLAY.md §5.5）。
+        Step '回放端到端' { & $py scripts\e2e_replay.py --port 8124 }
     }
 } finally { Pop-Location }
 
