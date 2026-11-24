@@ -339,6 +339,25 @@ def _apply_dst_result(
     # --- 独大：剩余兵力 > 0 即攻占（R4.4）-------------------------------
     prev_owner = dst_tile.owner
     prev_army = dst_tile.army
+    if prev_owner == result.winner:
+        # 战斗后由**原控制者**守住：兵力 = 战斗结算的剩余兵力（R4.3 winner = 最大 − 次大；
+        # R4.4"占领后兵力 = 结算剩余兵力，**不与原驻军累加**"）。
+        # 注意：只有"无战斗"的友军累加才用加法（R4.6）；打过的仗一律以剩余为准，
+        # 否则守军会凭空多出"原驻军"那一份（曾导致守方每被打一次就白涨一截）。
+        dst_tile.army = result.remaining
+        captures.append(
+            CaptureEvent(
+                tile=dst,
+                new_owner=result.winner,
+                previous_owner=prev_owner,
+                amount=result.remaining,
+                reason="arrive",
+                captured_capital=False,
+            )
+        )
+        if prev_army != dst_tile.army:
+            changed.add(dst)
+        return
     ev, extra = apply_capture(state, dst, result.winner, result.remaining)
     captures.append(ev)
     captures.extend(extra)

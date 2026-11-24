@@ -434,6 +434,36 @@ def test_tick_capture_neutral_city_subtracts_garrison_r3_8_r4_4() -> None:
     assert state.tiles[b].terrain == Terrain.CITY
 
 
+def test_defender_holding_battle_keeps_remaining_not_sum_r4_3_r4_4() -> None:
+    """守方赢下阵地战后，兵力 = **剩余**（守军 − 到达），不与原驻军累加（R4.3 / R4.4）。
+
+    回归：旧实现在"守方独大"分支里走 `apply_capture`，当 `previous_owner == winner`
+    时按 R4.6 的**累加**语义把 `remaining` 又加了一遍，于是守军每被攻打一次
+    就凭空多出"原驻军"那一份（14 兵守军被 1 兵打掉后变成 27 兵）。
+    """
+    state = make_state(size=5, players=(0, 1))
+    a = state.index(2, 0)
+    b = state.index(2, 1)
+    state.tiles[a] = make_tile(Terrain.PLAIN, army=2, owner=0)   # 进攻方：只能出 1 兵
+    state.tiles[b] = make_tile(Terrain.PLAIN, army=14, owner=1)  # 守方：14 兵
+    state.players[0].capital = a
+    state.players[1].capital = b
+    for idx in range(state.tile_count):
+        if idx not in (a, b):
+            state.tiles[idx] = make_tile(Terrain.PLAIN, army=0, owner=None)
+    state.tick = 1  # 下一 step = tick 2（Turn 1，不增长）
+
+    enqueue_move(state, 0, a, Dir.RIGHT, 1.0)  # ceil(2*1)=2，cap 1 → 1
+    report = tick.step(state)
+
+    assert state.tiles[b].owner == 1              # 守住了
+    assert state.tiles[b].army == 14 - 1 == 13    # 剩余，而不是 14 + 13
+    assert state.tiles[a].army == 1
+    # 战斗后总兵力只减少（1 兵被吃掉），不会凭空增加。
+    assert report.battles[0].fought is True
+    assert report.battles[0].remaining == 13
+
+
 def test_tick_weak_attack_leaves_neutral_city_r3_8() -> None:
     """20 兵打 44 兵的中立城市 → 打不下，城市仍中立且兵力减到 24。"""
     state = make_state(size=5, players=(0,))
