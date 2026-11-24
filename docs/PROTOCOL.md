@@ -241,8 +241,12 @@ ws://<host>:<port>/ws
 | `GET` | `/api/config` | 客户端启动参数 `{tickMs, maxPlayers, minSize, maxSize, colors}` |
 | `GET` | `/api/ai/strategies` | 可用策略清单 `{directory, strategies, errors, files}` |
 | `POST` | `/api/ai/reload` | 重新扫描策略目录，返回与上者同构的响应体 |
+| `GET` | `/api/replays` | 回放列表 `{directory, enabled, keep, count, active, replays:[summary…]}` |
+| `GET` | `/api/replays/{id}` | 一份完整回放（格式见 [`REPLAY.md`](REPLAY.md) §2） |
+| `DELETE` | `/api/replays/{id}` | 删除一份回放 `{ok, deleted}` |
 | `GET` | `/healthz` | 存活探针 `{"ok": true}` |
 | `GET` | `/waiting.html` | 房间列表页 |
+| `GET` | `/replay.html` | 回放页（`?id=<id>` 播放一局；无 `id` 时为列表） |
 | `GET` | `/` | 游戏页 |
 
 `/api/ai/strategies` 的 `strategies` 每项：
@@ -256,6 +260,30 @@ ws://<host>:<port>/ws
 `[{"file": "broken.py", "error": "SyntaxError: …"}]`。详见 AI_API.md §3。
 
 > 地图边长不由客户端指定（R2.3）：开局时按玩家数计算，实际值从 `game_start.size` 读取。
+
+### 4.1 回放接口
+
+`GET /api/replays` 每行（`docs/REPLAY.md` §2 摘要）：
+
+```json
+{ "id": "20261124T120530Z-public-1-050548", "room": "public-1",
+  "startedAt": "2026-11-24T12:05:30.532+00:00", "endedAt": "2026-11-24T12:18:02.115+00:00",
+  "size": 26, "tickMs": 500, "turns": 294, "reason": "ended",
+  "ended": true, "winner": 0, "winnerName": "Alice",
+  "players": [{ "playerId": 0, "name": "Alice", "color": "red", "strategy": "aegis" }],
+  "frameCount": 590, "aiCount": 41, "truncated": false, "aiTruncated": false, "bytes": 412345 }
+```
+
+`active` 是**仍在进行**的对局 id 列表。
+
+状态码（R8.2 / R8.5）：
+
+| 状态 | `error` | 含义 |
+| --- | --- | --- |
+| 200 | — | 正常 |
+| 409 | `replay_running` | 该回放所属对局**仍在进行**：对局结束前不可读、不可删 |
+| 404 | `replay_not_found` | id 非法或文件不存在 |
+| 500 | `replay_error` | 文件损坏 / 读失败 |
 
 ---
 

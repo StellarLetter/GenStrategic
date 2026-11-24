@@ -5,7 +5,47 @@
 
 ---
 
-## 2026-11-24 · 第八批：策略自动挂载与「策略接管」（R6.17）
+## 2026-11-24 · 第九批：对局回放与策略调试日志（R8.1–R8.6）
+
+**用户原话**
+
+> 增加对局回放功能，自动保存每一局对局的回放，并允许ai策略在回放打印自定义日志供调试复盘
+> （对局中不可读取回放）
+
+**推导出的硬约束**
+
+| 议题 | 结论 |
+| --- | --- |
+| 「对局中不可读取回放」 | 不是权限开关，而是**结构性**保证：录制期只在内存里，磁盘上没有这一局的回放，因此策略/玩家**没有任何读取路径**；接口对「进行中」的 id 显式返回 409 |
+| 策略日志的落点 | 写进**本局回放**（`ai` 流），而不是 stdout：这样它和对局时刻对齐、可按玩家/回合筛、可跳转 |
+| 回放与线协议的关系 | 回放帧**就是**下行帧（额外带 `tick`），所以播放器不需要专用解码器，直接喂给客户端的 `applyFrame` |
+| 地块视角 | 每个座位的 `tiles` 帧互不相同（迷雾裁剪），一份文件装不下 ⇒ 回放统一录**观战者视角**（全图真实，R3.10），与 R8.3 一致 |
+| 座位私有信息 | `commands` 回显、`reject`、`chain_dropped` 是只发给本人的，不录成帧，改录成策略调试条目（`action` / `reject` / `drop`），只在对局结束后可见 |
+| 中断的对局 | 房间关闭时按 `aborted` 落盘，保留现场（「打到一半崩了」也要能复盘） |
+
+**结论与落地**
+
+| 落地项 | 说明 |
+| --- | --- |
+| `server/generals/replay/record.py` | `ReplayRecorder`：帧流缓冲（带字节预算）+ AI 调试流（条数上限、文本截断）+ 离线对局的 `record_open/tick/close` |
+| `server/generals/replay/store.py` | `ReplayStore`：`begin/save/abort/list/load/delete/info/rebuild`，原子写、`index.json` 缓存、`keep` 保留策略、**`ReplayRunning` 守卫** |
+| `Room` 接线 | `start()` 建录制器并录开局帧；`_advance()` 录观战者地块增量；`broadcast()` 录广播帧；`_record_reject/_record_drop` 录座位私有反馈；终局后 `_finish_replay("ended")`；`close()` → `aborted` |
+| 策略日志 | `server/generals/ai/debug.py` 的 `log()/debug()/info()/warn()/error()`：contextvar sink，无 sink 静默丢弃；`ai.runner` 在 `act/reset` 前后 `capture()`；`asyncio.to_thread` 复制 context ⇒ 远程策略线程里也生效；`GENERALS_AI_LOG_ECHO=1` 可选回显 stderr |
+| 额外留痕 | `AIRunner` 记 `action`（已量化指令）与 `error`（异常/非法 Action）；`Room` 记 `reject`（含 `code`）与 `drop`（R4.12 作废） |
+| 只决策一次 | `AIRunner` 新增 `_can_operate()`：出局/投降过渡期内不再让策略决策，避免满屏 `not_your_turn` 噪声 |
+| HTTP | `GET /api/replays`、`GET/DELETE /api/replays/{id}`（409 `replay_running` / 404 / 500） |
+| 前端 | `replay.html` + `src/core/replay.ts`（解析 + `ReplayCursor`）+ `src/replay/*`（装配/控制条/AI 调试流/只读聊天）；对局页新增「回放」按钮；`styles/replay.css` |
+| 工具 | `tools/replay.py`（`list` / `show --ai` / `demo`）、`tools/ai_arena.py --replay-dir`（每局留档、多进程安全） |
+| 测试 | `server/tests/test_net_replay.py`（14 例）+ `scripts/e2e_replay.py` + `web/scripts/e2e-replay.mjs`（真浏览器） |
+| 数据不入库 | `.gitignore` 增 `replays/`（运行期数据，像 `ai/*.py` 一样不入库） |
+
+**受影响**：
+`docs/RULES.md` 新增 §8（R8.1–R8.6）；新增 `docs/REPLAY.md`（格式事实源）；
+`docs/PROTOCOL.md` §4 补回放接口与状态码；`docs/INTERFACES.md` §2.2 补 `Room` 回放入口、
+新增 §2.4 `replay`；`docs/ARCHITECTURE.md`（目录树、依赖图、回放时序、测试分层）；
+`docs/AI_API.md` §0/§5/§11（`log()` 用法与复盘入口）；`AGENT.md`、`README.md` 同步。
+
+---
 
 **用户原话**
 

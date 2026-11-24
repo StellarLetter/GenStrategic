@@ -68,9 +68,14 @@ generals/
 │   │   │   ├── lobby.py         # 房间表、加入/离开、座位分配
 │   │   │   ├── room.py          # 单房间生命周期：等待 → 对局 → 结束；刻时钟驱动
 │   │   │   └── session.py       # 单条 WS 连接的会话状态机
+│   │   ├── replay/              # ★ 对局回放（docs/REPLAY.md）：录制、落盘、索引、保留
+│   │   │   ├── __init__.py
+│   │   │   ├── record.py        # ReplayRecorder：帧流 + AI 调试条目（内存缓冲）
+│   │   │   └── store.py         # ReplayStore：原子落盘 / index.json / 保留策略 / 对局中不可读
 │   │   ├── ai/
 │   │   │   ├── __init__.py
 │   │   │   ├── api.py           # ★ AI 接口：Action / Observation / Agent 协议 + neighbours4 等工具
+│   │   │   ├── debug.py         # ★ 策略调试日志 `log()`（写进本局回放，AI_API.md §11）
 │   │   │   ├── registry.py      # 策略注册表（名字 → 类；支持 snapshot/unregister 供热重载）
 │   │   │   ├── loader.py        # ★ 策略目录自动挂载：扫描 ai/、错误隔离、热重载
 │   │   │   ├── runner.py        # AI 座位：把 Observation 喂给策略、把 Action 回灌房间
@@ -85,6 +90,9 @@ generals/
 ├── ai/                          # ★ 策略目录（运行期数据，不属于 Python 包）
 │   ├── README.md                # 目录约定速查
 │   └── sample_greedy.py         # 可复制改名的示例策略
+├── replays/                     # ★ 回放目录（运行期数据，Git 忽略；GENERALS_REPLAY_DIR 可覆盖）
+│   ├── index.json               # 列表缓存（删了会自动重建）
+│   └── <id>.json                # 每局一份，见 docs/REPLAY.md §2
 ├── web/
 │   ├── index.html               # 游戏页（结构对齐保存页 generals.io.htm）
 │   ├── waiting.html             # 房间列表页
@@ -95,6 +103,7 @@ generals/
 │   │   │   ├── types.ts         # 与 PROTOCOL.md 对齐的类型
 │   │   │   ├── client.ts        # WS 客户端（重连、发送）
 │   │   │   ├── state.ts         # 客户端状态树 + 帧应用（diff）
+│   │   │   ├── replay.ts        # 回放解析 + 按 Tick 重放的游标（ReplayCursor）
 │   │   │   ├── chains.ts        # 调兵链本地镜像 + 比例状态机
 │   │   │   └── geometry.ts      # 坐标换算、4/8 相邻
 │   │   ├── render/              # Canvas 渲染（只读核心状态）
@@ -102,6 +111,11 @@ generals/
 │   │   │   ├── camera.ts        # 正投影视口与缩放
 │   │   │   ├── painter.ts       # 地块/兵量/选中/路径绘制
 │   │   │   └── icons.ts         # 王冠/城市/山地/骷髅 图标
+│   │   ├── replay/              # 回放页（replay.html）：装配 + AI 调试流 + 控制条 + 只读聊天
+│   │   │   ├── main.ts          # 回放页装配点（游标重放 → 复用 render/ui）
+│   │   │   ├── controls.ts      # 播放/暂停、倍速、时间轴、Tick/时长
+│   │   │   ├── ailog.ts         # AI 调试流面板（按玩家/kind 筛、点条跳转）
+│   │   │   └── chatlist.ts      # 只读聊天/播报（可回溯重建）
 │   │   ├── ui/                  # DOM 面板
 │   │   │   ├── leaderboard.ts   # 排行榜（星/骷髅/兵量/地盘）
 │   │   │   ├── turn.ts          # 回合计数器
@@ -125,9 +139,18 @@ generals/
 
 ```
 transport ──► net ──► game
+                 ├──► replay ──► game（只读：view.project / turn_of）
                  └──► ai ──► game
 web (浏览器) ──(协议)──► transport
 ```
+
+`replay` **不认识** `net` / `ai` / `transport`：房间把「已编码的广播帧」与「观战者视角的地块增量」
+交给 `ReplayRecorder`，策略调试条目由 `Room.record_ai_*` 转交。因此 `tools/` 里的离线工具
+（`ai_arena.py --replay-dir`、`replay.py`）也能复用同一套录制与读取，产物与线上完全同构。
+
+`ai.debug`（策略日志 `log()`）**只依赖标准库**：`ai.runner` 用 `capture()` 把当前座位的 sink
+绑到 contextvar，`step_async()` 的 `asyncio.to_thread` 会复制 context，因此线程里的日志也能回填到
+本局回放。`ai/` 目录里的策略**拿不到**任何读回放的入口（R8.2）。
 
 `ai.loader` 在运行期**按需加载用户策略文件**（`ai/*.py`）：这些文件只允许 import `generals.ai` 与
 `generals.game` 的公开符号，因此不破坏依赖方向；加载失败只影响该文件本身（AI_API.md §3）。
@@ -163,6 +186,24 @@ WebSocket 客户端 → client.ts 解帧 → state.ts 应用 → render + ui 重
 >
 > **时钟归属**：`Room.start()` 末尾调 `_ensure_clock()`，有事件循环就 `create_task(self.run())`，
 > 同步场景（单测）静默跳过并由 `step_once()` 手动推进。幂等且可由 `close()` 取消。
+
+### 4.1 回放录制在同一个 Tick 上的位置
+
+回放只是**旁路**（`docs/REPLAY.md`）：不改变任何结算，也不改变下发给玩家的帧。
+
+```
+Room.start()
+  ├ ReplayStore.begin(...) → ReplayRecorder（内存，绑定 state）
+  ├ 建策略 runner（reset 里的 log 也会进回放）
+  ├ broadcast(game_start) + 逐座位全量 tiles → 录帧
+  └ 另录一份「观战者视角」全量 tiles（逐座位帧不能共用，R3.10 / R8.3）
+Room._advance（每刻）
+  ├ broadcast → 每条帧顺手录（带 tick）
+  ├ _record_tiles(state)  → 观战者视角的地块增量
+  ├ _record_reject/_record_drop → 座位私有的拒绝/作废也留痕（只进 ai 流）
+  └ 终局：broadcast(game_over + 战报) 之后才 _finish_replay("ended")
+Room.close()（未结束）→ _finish_replay("aborted")
+```
 
 **关键不变量**
 
@@ -203,8 +244,10 @@ WebSocket 客户端 → client.ts 解帧 → state.ts 应用 → render + ui 重
 | --- | --- | --- |
 | 内核单测 | `server/tests/test_kernel_*.py` | 规则 `R1..R7` 逐条 |
 | 网络/AI 单测 | `server/tests/test_net_*.py`、`test_ai_*.py` | 协议编解码、房间时钟、大厅、AI 策略 |
+| 回放单测 | `server/tests/test_net_replay.py` | 自动落盘与帧流完整性、**对局中不可读**、日志/动作/拒绝留痕（含线程池路径）、上限截断、保留与删除、HTTP 状态码（R8.x） |
 | 协议级端到端 | `scripts/e2e_smoke.py` | 真起 uvicorn + 真 WS 客户端跑 join/start/tick/move/chat/surrender/观战/HTTP |
 | 浏览器端到端 | `web/scripts/e2e-page.mjs` | 真 Edge 两个页面开局，断言画布尺寸、格边长（R2.3）、迷雾底色、网格线、排行榜行数、回合文本与聊天栏首行提示，并截图 |
+| 回放端到端 | `scripts/e2e_replay.py` + `web/scripts/e2e-replay.mjs` | 自造样本回放 → 真服务 → 真 Edge：列表、按 `?id=` 播放、跳转/Tick 与回合一致、AI 流筛选与跳条、倍速推进、键盘单步 |
 
 一键：`.\scripts\test.ps1`。
 

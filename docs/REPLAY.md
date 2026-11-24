@@ -159,11 +159,14 @@ Room.close()（对局未结束时）
 
 ### 5.1 网页复盘
 
-对局页（`/`）左侧「回放」按钮列出最近 50 局；也可以直接开 `/replay.html?id=<id>`。
+对局页（`/`）顶部的「回放」按钮打开最近的对局列表；也可以直接开 `/replay.html?id=<id>`。
 
 `/replay.html` 的界面：地图（全图真实信息）+ 播放/暂停、`0.5×`–`16×` 倍速、
 可拖动的时间轴（按 Tick）+ 回合显示 + 排行榜 + 聊天栏 + **AI 调试流面板**
 （按玩家筛、按 `kind` 筛、点条目跳到对应 Tick）。
+
+快捷键：`空格` 播放/暂停、`←`/`→` 退/进 1 Tick、`Shift+←/→` 退/进 10 Tick。
+画面可拖拽平移、滚轮缩放（与对局页同一套摄像机）。
 
 ### 5.2 终端复盘
 
@@ -198,6 +201,16 @@ def act(self, obs):
 ```powershell
 .venv\Scripts\python.exe tools\ai_arena.py --a aegis --b greedy --games 20 --swap --replay-dir .dispatch\replays
 ```
+
+### 5.5 验收（e2e）
+
+```powershell
+.venv\Scripts\python.exe tools\replay.py demo --dir .dispatch\replays   # 造一份带日志/拒绝/作废的样本
+.venv\Scripts\python.exe scripts\e2e_replay.py                          # 自造样本 → 真服务 → 真 Edge 断言
+```
+
+`scripts/e2e_replay.py` 会自动建临时目录、跑一局离线对局产出样本、起 uvicorn 并驱动
+`web/scripts/e2e-replay.mjs`；`.\scripts\test.ps1` 已把它纳入全量验收。
 
 ---
 

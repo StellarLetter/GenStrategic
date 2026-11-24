@@ -54,6 +54,7 @@ class MyBot:
 | AI 与真人**看到的东西完全一样** | 观测一律经 `game.view.project` 裁剪，没有透视、没有作弊通道 |
 | AI 的指令走**真人同一条校验路径** | 非法动作会被服务端 `reject`，不是"AI 内部报错" |
 | 每刻**最多 1 条**调兵（R4.7） | 想连招就把请求排进调兵链（`Action(op="move")` 可连续多次） |
+| 每局**自动录回放**（R8.1） | 你的 `log()` / 动作 / 异常 / 被拒指令都会进回放，打完用 `/replay.html` 或 `tools/replay.py` 复盘 |
 
 ---
 
@@ -324,6 +325,9 @@ curl http://127.0.0.1:8000/api/ai/strategies
 # 注册与注册表
 from generals.ai import register, get, all_names, registered
 
+# 调试日志（写进本局回放，§11）
+from generals.ai import log            # 也有 debug / info / warn / error
+
 # 数据结构与工具（一处全拿）
 from generals.ai.api import (
     Action, Observation, GameSpec, Row, RATIOS,
@@ -494,19 +498,73 @@ register("remote")(lambda: RemoteAgent(url="http://127.0.0.1:9000/decide", name=
 
 ---
 
-## 11. 调试与排错
+## 11. 调试与复盘（策略日志进回放）
+
+### 11.1 用 `log()` 写调试日志
+
+```python
+from generals.ai import log
+
+def act(self, obs):
+    log(f"turn {obs.turn}: army={obs.my_army} land={obs.my_land}")   # 默认 level="debug"
+    if obs.my_army < 20:
+        log("兵力告急，开始收缩", level="warn")
+    return None
+```
+
+| 事实 | 说明 |
+| --- | --- |
+| 写到哪里 | **本局回放**的 `ai` 流（`docs/REPLAY.md` §2.2），对局结束后可查；对局中磁盘上还没有回放文件 |
+| 什么时候没有 | 离线脚本 / 单元测试 / 未录制的对局里 sink 为空 → **静默丢弃**，绝不报错 |
+| 对局中能读回放吗 | **不能**（R8.2）：`log()` 只能写，`ai/` 里也没有任何读回放的入口 |
+| 会影响对局吗 | 不会：文本超长会截断、条目有上限，任何内部异常都被吞掉 |
+| 想边打边看 | 设 `GENERALS_AI_LOG_ECHO=1`，同样的日志会同时打到 stderr（前缀 `[ai:<level>]`） |
+
+快捷函数：`log(msg)` / `debug(msg)` / `info(msg)` / `warn(msg)` / `error(msg)`，
+以及 `generals.ai.debug.capture(sink)`（离线工具把日志接到自定义 sink 用）。
+
+### 11.2 回放里还能看到什么
+
+除你自己的 `log` 外，回放自动记录（无需你做任何事）：
+
+| kind | 来源 | 用途 |
+| --- | --- | --- |
+| `action` | 你每刻返回的指令（比例已量化） | 对照 `log` 看「它到底做了什么」 |
+| `error` | 你的策略抛出的异常（含 `Action` 非法） | 线上异常被吞掉当"不操作"，只有这里留痕 |
+| `reject` | 服务端拒绝的指令 + `code` | 区分「没想做」与「想做但不许」 |
+| `drop` | 调兵请求在发起阶段作废（R4.12） | 解释「为什么调兵没发生」 |
+
+### 11.3 复盘入口
+
+| 方式 | 命令 |
+| --- | --- |
+| 网页 | 对局页顶部「回放」→ `/replay.html`；`/replay.html?id=<id>` 直接播一局 |
+| 终端 | `python tools/replay.py list`、`python tools/replay.py show <id> --ai --player 0` |
+| 离线批量 | `python tools/ai_arena.py --a my-bot --b greedy --games 10 --replay-dir .dispatch\replays` |
+
+### 11.4 `print` 还行吗
+
+行，但只打到服务端控制台，对局结束就散了、也没法按玩家/回合检索。
+**调试策略优先用 `log()`**，它进回放、可筛、可跳转。生产环境两者都该少用。
+
+> 症状对照：`error` 条目说明你的 `act()` 抛了异常（此时该刻视为"不操作"）；
+> `reject` 条目说明指令被服务端拒（`code` 见 `PROTOCOL.md` §5）；
+> `drop` 条目说明请求入队合法但结算时起点已失 / 调兵量 ≤ 0（R4.12）。
+
+### 11.5 排错速查
 
 | 症状 | 先查哪里 |
 | --- | --- |
 | 下拉框里没有我的策略 | 真的重扫过吗（`POST /api/ai/reload`，`GET` 只回旧报告）；`errors` 里有没有它；文件名是否 `_` 开头；`@register` 名字是否为空 |
 | 全部策略都 `ImportError` | 服务进程**启动时间**早于 `api.py` 的改动：模块已在内存里固化，重载策略文件也救不回来，只能重启服务 |
-| 选了策略但一动不动 | 策略是否返回 `None`；`room.strategy_state()` 的 `error` / `lastError` |
-| 动作被服务端拒绝 | 房间对局里看是否收到 `reject`（开局离线循环最能暴露问题，§6.2） |
+| 选了策略但一动不动 | 策略是否返回 `None`；对局结束后看回放的 `error` 条目；或 `room.strategy_state()` 的 `error` / `lastError` |
+| 动作被服务端拒绝 | 回放 `ai` 流里筛 `reject`，看 `code`；或离线循环（§6.2）里打印 `rejects` |
+| 想看清每一步决策 | 在 `act()` 里 `log(...)`，打完用 `tools/replay.py show <id> --ai` 或网页回放按玩家筛 |
 | 改完不生效 | 有没有 reload（§3.3）；是否改了 `ai/` 之外的副本 |
 | 想确认真的在跑 | 对局里看自己的地块数是否随 Turn 增长；或离线跑 §6 的脚本打印 `land` |
 
-**开关调试**：策略里可以 `print`，会直接打到服务端控制台（`dev.ps1` 的窗口）。
-生产环境请删掉或用 `logging`。
+**开关调试**：`print` 仍可用（直接打到服务端控制台），但只有 `log()` 会进回放；
+两者都不该留在生产策略里。
 
 ---
 

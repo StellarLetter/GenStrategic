@@ -262,6 +262,19 @@ class Room:
 
 地图边长由开局玩家数决定（R2.3），构造参数 `size=` 仅供测试显式覆盖。
 
+回放相关（`docs/REPLAY.md`，R8.1–R8.6）：
+
+```python
+Room(room_id, config, *, seed=None, size=None, replay_store=None)
+    # replay_store = generals.replay.ReplayStore；非空则**整局自动录制**回放并落盘
+Room.replay        -> ReplayRecorder | None   # 进行中非空；结束/未录制为 None
+Room.replay_error  -> str | None              # 上次落盘失败原因（回放是旁路，绝不影响对局）
+Room.record_ai_log(player_id, text, *, level="debug", seat=None, strategy=None) -> None
+Room.record_ai_action(player_id, action, *, seat=None, strategy=None) -> None
+Room.record_ai_error(player_id, error, *, seat=None, strategy=None) -> None
+    # 策略侧入口是 generals.ai.log()；房间只负责把条目转给录制器（未录制时空操作）
+```
+
 ### 2.3 `net.session`
 
 ```python
@@ -270,6 +283,48 @@ class Session:
     async def on_message(self, raw: str) -> None
     async def on_close(self) -> None
 ```
+
+### 2.4 `replay` — 对局回放（`docs/REPLAY.md` 是格式事实源）
+
+```python
+class ReplayStore:
+    def __init__(self, directory=None, *, limits: ReplayLimits | None = None,
+                 keep: int = REPLAY_KEEP, enabled: bool = True, index_enabled: bool = True)
+    def begin(self, *, room_id, seed, size, tick_ms, players) -> ReplayRecorder | None
+    def save(self, recorder, *, reason="ended") -> dict     # 整份落盘（一次），返回摘要行
+    def abort(self, recorder, *, reason="aborted") -> dict | None   # 同上但吞异常
+    def list(self, *, limit=50) -> list[dict]               # 新的在前（索引缓存）
+    def load(self, replay_id) -> dict                       # 完整回放
+    def delete(self, replay_id) -> bool
+    def is_active(self, replay_id) -> bool                  # 该局是否仍在进行（不可读）
+    def active_ids(self) -> list[str]
+    def info(self) -> dict                                  # {directory, enabled, keep, active, count}
+    def rebuild(self) -> list[dict]                         # 按目录重建索引（多进程写完收尾用）
+
+class ReplayRecorder:
+    def __init__(self, *, replay_id, room_id, seed, size, tick_ms, players,
+                 limits=None, started_at="")
+    def attach(self, state) -> None
+    def record_frame(self, frame: dict, *, size_hint=None) -> None
+    def record_tiles(self, state, *, full=False) -> None     # 观战者视角的地块增量
+    def record_ai_log(player_id, *, text, level="debug", seat=None, strategy=None) -> None
+    def record_ai_action(player_id, *, action, seat=None, strategy=None) -> None
+    def record_ai_error(player_id, *, error, seat=None, strategy=None) -> None
+    def record_reject(player_id, *, op="", seq=0, code="") -> None
+    def record_drop(player_id, *, src, direction, ratio, reason, cascade=0) -> None
+    def record_open(state) / record_tick(state) / record_close(state) -> None
+        # 离线对局（不经房间）录同构帧流：`tools/ai_arena.py --replay-dir`
+    def finish(*, reason="ended", ended_at="") -> dict       # 完整回放 dict（不落盘）
+
+class ReplayLimits:      # 缺省取自 config.REPLAY_*
+    max_bytes: int; ai_log_max: int; ai_text_max: int
+
+ReplayError / ReplayNotFound / ReplayRunning      # load 的三类失败（→ HTTP 500 / 404 / 409）
+default_replay_dir() -> Path                      # GENERALS_REPLAY_DIR > <repo>/replays
+```
+
+**前置/后置/抛出**：`begin/save/record_*` 都**不抛**（回放是旁路，失败只记 `Room.replay_error`）；
+`load` 抛 `ReplayRunning`（对局中不可读，R8.2）/ `ReplayNotFound` / `ReplayError`。
 
 ---
 
@@ -355,6 +410,8 @@ class AIRunner:
 
 `Room` 持有 `seat → AIRunner` 映射（`Room._runners`），在**每 Tick 推进内核之前**
 统一 `step()`；策略异常被吞掉记进 `last_error`，对局照常推进。
+`step()` 会先把策略过程中的 `generals.ai.log()`（经 `ai.debug.capture` 绑定）、
+本刻动作、异常喂给房间的回放录制器（`docs/REPLAY.md` §2.2）。
 
 接入方式（三选一）：
 

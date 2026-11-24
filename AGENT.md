@@ -20,7 +20,8 @@
 | 2 | `docs/ARCHITECTURE.md` | 分层、依赖方向、目录树、一个 Tick 的数据流 |
 | 3 | `docs/INTERFACES.md` | 每个模块的黑盒调用契约（签名 + 前后置条件） |
 | 4 | `docs/PROTOCOL.md` | WebSocket / HTTP 帧格式与错误码 |
-| 5 | `docs/AI_API.md` | **策略接入手册**：只读这一份就能写出并上场一个策略（数据结构 / 自动挂载 / 接管 / 坑） |
+| 5 | `docs/AI_API.md` | **策略接入手册**：只读这一份就能写出并上场一个策略（数据结构 / 自动挂载 / 接管 / 日志 / 坑） |
+| 6 | `docs/REPLAY.md` | **对局回放**：每局自动录制、文件格式、策略调试流、`/replay.html` 与 `tools/replay.py` |
 
 `docs/DECISIONS.md` 记录规则变更过程与裁决理由，**不是规则**，只在追溯历史时读。
 
@@ -31,29 +32,34 @@
 ```
 generals/
 ├── AGENT.md  README.md
-├── docs/                    # RULES / ARCHITECTURE / INTERFACES / PROTOCOL / AI_API / DECISIONS
+├── docs/                    # RULES / ARCHITECTURE / INTERFACES / PROTOCOL / AI_API / REPLAY / DECISIONS
 ├── server/
 │   ├── generals/
 │   │   ├── app.py           # FastAPI 装配点（唯一组装根）
 │   │   ├── config.py        # 常驻参数
 │   │   ├── game/            # ★ 纯内核：mapgen / state / commands / combat / rules / tick / view
 │   │   ├── net/             # 房间与连接：lobby / room / session / protocol
-│   │   ├── ai/              # AI 接口：api / registry / loader（自动挂载）/ runner / builtin / remote_client
+│   │   ├── replay/          # ★ 对局回放：record（录制）/ store（落盘、索引、保留、不可读守卫）
+│   │   ├── ai/              # AI 接口：api / debug（策略日志）/ registry / loader / runner / builtin / remote_client
 │   │   └── transport/       # FastAPI 路由：http_routes / ws_routes
 │   ├── tests/               # pytest（内核规则单测 + 集成测）
 │   └── pyproject.toml
 ├── web/                     # Vite + TS，无框架
 │   ├── index.html           # 对局页
 │   ├── waiting.html         # 房间列表页
-│   ├── src/core/            # 纯逻辑：types / geometry / state / chains / client（不碰 DOM）
+│   ├── replay.html          # ★ 回放页（?id= 播放一局；无 id 为列表）
+│   ├── src/core/            # 纯逻辑：types / geometry / state / chains / client / replay（不碰 DOM）
 │   ├── src/render/          # Canvas：palette / camera / icons / painter
 │   ├── src/ui/              # DOM：leaderboard / turn / chat / autopilot（策略接管面板）
+│   ├── src/replay/          # 回放页装配：main / controls / ailog / chatlist
 │   ├── src/input/           # keyboard / pointer
 │   ├── src/main.ts          # ★ 前端唯一装配点
-│   ├── styles/              # palette.css（配色变量）/ game.css / waiting.css
-│   └── scripts/             # shot.mjs（截图）、e2e-page.mjs（真浏览器联调）
-├── scripts/                 # dev.ps1 / test.ps1 / e2e_smoke.py
+│   ├── styles/              # palette.css（配色变量）/ game.css / waiting.css / replay.css
+│   └── scripts/             # shot.mjs（截图）、e2e-page.mjs、e2e-replay.mjs（真浏览器联调）
+├── scripts/                 # dev.ps1 / test.ps1 / e2e_smoke.py / e2e_replay.py
+├── tools/                   # 离线工具：ai_arena.py（对战基准，可 --replay-dir 留档）/ replay.py（回放 CLI）
 ├── ai/                      # ★ 策略目录：放 *.py 就自动挂载（新手从 sample_greedy.py 复制）
+├── replays/                 # ★ 回放目录（运行期数据，不入库；GENERALS_REPLAY_DIR 可覆盖）
 └── SaveWeb/                 # 用户提供的原站存档与截图 = 视觉基准（只读，勿改）
 ```
 
@@ -63,11 +69,13 @@ generals/
 
 ```
 web (TS, 无框架)  ──WebSocket JSON──►  transport/ ──► net/ ──► game/ (纯内核)
-                                          ▲                    ▲
+                                          ▲             │         ▲
+                                          │             └──► replay/ (只读 state 与广播帧)
                                           └── ai/ (策略) ──────┘ 只读视野
 ```
 
-**依赖只能向下**：`transport → net → game`，`ai → game`；`game` 不 import 任何上层，不碰 I/O、时钟、随机。
+**依赖只能向下**：`transport → net → game`，`net → replay → game`，`ai → game`；
+`game` 不 import 任何上层，不碰 I/O、时钟、随机。`replay` 不认识 `net`/`ai`（房间把编码好的帧交给它）。
 
 **一个 Tick**：`增长 → 发起调兵 → 遭遇战 → 阵地战 → 更新占领 → 检查停止抵抗`（R7.1），
 然后 `view.project()` 按座位裁剪并广播。前端不做战斗预测。
@@ -113,10 +121,17 @@ cd web && pnpm install && cd ..
 cd web && pnpm dev        # http://127.0.0.1:5173 → 代理 /ws、/api 到 :8000
 
 # ---- 测试 ----
-.\scripts\test.ps1                                    # 全量：pytest + tsc + build + e2e
+.\scripts\test.ps1                                    # 全量：pytest + tsc + build + e2e(smoke/replay)
 .venv/Scripts/python -m pytest server/tests -q        # 只跑后端
 .venv/Scripts/python scripts/e2e_smoke.py --ticks 20  # 只跑协议级端到端
+.venv/Scripts/python scripts/e2e_replay.py            # 只跑回放端到端（真服务 + 真 Edge）
 cd web && node scripts/e2e-page.mjs http://127.0.0.1:8000 ../.dispatch/live.png  # 真浏览器
+
+# ---- 回放（每局自动保存，见 docs/REPLAY.md）----
+.venv/Scripts/python tools/replay.py list                     # 最近的对局
+.venv/Scripts/python tools/replay.py show <id> --ai             # 含策略调试流
+.venv/Scripts/python tools/replay.py demo --dir .dispatch/replays  # 造一份样本（验收/截图用）
+#   网页：对局页顶部「回放」或直接开 http://127.0.0.1:8000/replay.html?id=<id>
 
 # ---- 前端 ----
 cd web && pnpm exec tsc --noEmit   # 类型检查（strict + noUnusedLocals）
@@ -144,6 +159,7 @@ cd web && pnpm build               # 产物 web/dist，由后端静态托管
 | 全屏按键 | 进入 / 退出全屏 | R6.16 |
 | 记分板折叠按钮 | 折叠为「颜色块 + Army + Land」，无表头/名字/星数 | R6.16 |
 | 聊天栏隐藏 / 展开按钮 | 隐藏后只留展开按钮 | R6.16 |
+| 回放按钮 / `/replay.html` | 看每局自动保存的回放（点 AI 日志可跳到该刻） | R8.1 / R8.2 |
 
 > 比例**不自动保持**：每提交一次调兵后回到 100%（R6.6）；当前比例以 `N%` 叠加显示在选中格内。
 > 回合显示 / 投降 / 全屏 / 记分板 / 聊天栏都是**可拖动的浮层**，位置记在 `localStorage`（R6.14）；
