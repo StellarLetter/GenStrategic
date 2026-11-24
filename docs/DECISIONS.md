@@ -5,6 +5,37 @@
 
 ---
 
+## 2026-11-24 · 第七批：缩放锚点、无限制平移、capture 只播停止抵抗、全屏与面板收起
+
+**用户原话**
+
+> 1.缩放时以鼠标为参照点；2.不限制地图移动位置（可以移到任意位置）；3.capture只播报停止抵抗，
+> 不播报普通地块占领；4.提供全屏按键，和计分板可折叠（仅有颜色和两组数字，没有抬头等），
+> 聊天栏可隐藏（只有展开按钮）
+
+**逐条澄清（用户选择）与落地**
+
+| 议题 | 结论 | 依据/影响 |
+| --- | --- | --- |
+| `capture` 范围 | **聊天消息与 `event{kind:"captured"}` 帧都只在停止抵抗时发** | 用户选择「两者都只发停止抵抗」；两者同源，避免「聊天安静但事件流噪声大」的不一致 |
+| 判定依据 | 攻陷王城的 `CaptureEvent`（`captured_capital`） | R5.2 全继承 ⇒ 被攻占者失去全部地块 ⇒ R5.3 出局；普通占格、转中立都不满足 |
+| 折叠后的记分板 | 每行只有**颜色块 + Army + Land**，无表头、无名字、无星数 | 用户选择；出局行照旧标灰 |
+| 折叠/隐藏状态 | **不记忆**（刷新复位）；面板位置仍记忆 | 用户选择「不记忆」 |
+| 缩放锚点 | 滚轮缩放保持**光标下的格子在原位** | R6.15；实现为 `camera.zoomAt(cam, dir, sx, sy)`，先由屏幕坐标反算世界坐标再换档 |
+| 平移边界 | **完全取消 `clampCamera`**：地图可拖到窗口任意位置甚至移出窗口 | R6.15；`visibleRange` 天然容忍空范围，移出后只剩 `--bg-void` 底色 |
+| 全屏 | 顶部新增全屏按键（进入/退出），文案随 `fullscreenchange` 同步 | R6.16；不支持全屏 API 时按钮禁用 |
+
+**受影响**：`R6.10`（补「captured 只在停止抵抗时播」）、`R6.14`（布局条文收窄为浮层本身）、
+新增 `R6.15`（视图操作）、`R6.16`（全屏与面板收起）；
+`net/room.py`（`_broadcast_report_events` 改为只处理 `captured_capital`）；
+`docs/PROTOCOL.md` §3.7（`captured` 事件语义）；
+`web/src/render/camera.ts`（`zoomAt`、去掉钳制）、`web/src/input/pointer.ts`（wheel 传光标坐标）、
+`web/src/main.ts`（全屏按钮装配、`__generalsDebug` 增 `tileAt`/`origin`）、
+`web/src/ui/leaderboard.ts`（折叠态）、`web/src/ui/chat.ts`（隐藏 + 展开按钮）、
+`web/styles/game.css`、`web/scripts/e2e-page.mjs`（锚点缩放、无边界平移、全屏调用、折叠、隐藏断言）。
+测试：`server/tests/test_net_chat_surrender.py` 新增 `test_plain_tile_capture_is_silent_r6_10`，
+原有 `captured` 用例改用「攻陷王城」构造（普通占格不再播报）。
+
 ## 2026-11-24 · 修复：攻打敌方 0 兵力地块必须易手
 
 **用户原话**

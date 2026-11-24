@@ -169,6 +169,8 @@ ws://<host>:<port>/ws
 ```
 `kind ∈ { captured, left, surrendered, kicked, game_over, chain_dropped }`。
 
+`captured` **只在停止抵抗时广播**（R6.10）：即 `who` 攻陷了 `target` 的王城、`target` 因此失去全部领土并出局（R5.2 / R5.3）。**普通地块易主不产生 `captured` 事件**（也没有对应的聊天消息），客户端不要靠它统计占格。
+
 `chain_dropped`（R4.12 调兵请求作废）**只发给该请求的拥有者**，同时该玩家会立刻收到一份新的 `commands` 全量快照：
 ```json
 { "t": "event", "kind": "chain_dropped", "playerId": 0, "from": 202,

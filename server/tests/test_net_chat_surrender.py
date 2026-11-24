@@ -217,10 +217,12 @@ def test_captured_text_has_no_turn_suffix_but_frame_carries_turn_r6_10() -> None
     前端 `web/src/ui/chat.ts::renderLine` 会把 `turn` 渲染成独立的 `.turn` 元素
     （视觉结果是 `Alice captured Bob. 37.`）。若 `text` 里也写回合号，界面会重复成
     `... 37. 37.`。
+
+    只有**攻陷王城 / 停止抵抗**（`take_capital=True`）才播 `captured`（R6.10）。
     """
     room, a, b = two_player_room("cap-turn")
     pump(a, b)
-    capital, target = _stage_capture(room, a.player_id, b.player_id, take_capital=False)
+    capital, target = _stage_capture(room, a.player_id, b.player_id, take_capital=True)
     _move(room, a, capital, target)
     pump(a, b)
     room.step_once()
@@ -254,6 +256,24 @@ def test_captured_text_has_no_turn_suffix_but_frame_carries_turn_r6_10() -> None
     events = [f for f in frames if f["t"] == "event" and f["kind"] == "captured"]
     assert events and events[0]["who"] == "Alice" and events[0]["target"] == "Bob"
     assert events[0]["turn"] == turn
+
+
+def test_plain_tile_capture_is_silent_r6_10() -> None:
+    """R6.10：**普通地块易主不播** `captured` —— 聊天与 `event` 帧都不发。
+
+    一局里占格成千上万，逐格播报只会把聊天栏刷满；只有攻陷王城（停止抵抗）才播。
+    """
+    room, a, b = two_player_room("cap-plain")
+    pump(a, b)
+    capital, target = _stage_capture(room, a.player_id, b.player_id, take_capital=False)
+    _move(room, a, capital, target)
+    pump(a, b)
+    room.step_once()
+    frames = b.drain_nowait()
+    assert any(f["t"] == "tiles" for f in frames), "本刻应当确实发生了占格（tiles 增量）"
+    assert not [f for f in frames if f["t"] == "event" and f["kind"] == "captured"]
+    assert not [f for f in frames if f["t"] == "chat" and "captured" in f["text"]]
+    assert not [e for e in room.chat_log if e["system"] and "captured" in e["text"]]
 
 
 def test_capital_capture_announces_captured_only_once_r6_10() -> None:

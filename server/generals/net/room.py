@@ -778,12 +778,12 @@ class Room:
               `"<A> captured <B>."` 与 `"<B> left."`。
         抛出：无 —— 对报告字段缺失采取宽容处理。
 
-        `captured` 的三条硬约束（R6.10 / R5.5）：
-        1. **必须有明确攻占者**：`new_owner is None` 不播（例如投降过渡期满、地块转中立 R5.5，
-           `reason="neutral"`，没有「谁攻占了谁」这回事）；
+        `captured` 的三条硬约束（R6.10 / R5.2 / R5.5）：
+        1. **只在「停止抵抗」时播**：必须是**攻陷他人王城**的那一次（`captured_capital`，
+           R5.2 一次性继承全部领土 ⇒ 被攻占者失去全部地块 ⇒ R5.3 出局）。
+           **普通地块易主一律不播** —— 一局里占格成千上万，播报只会把聊天刷满；
         2. **同一次攻占只播一条**：攻陷王城会一次性继承全部领土（R5.2），内核按地块
-           逐块发 `reason="inherit"` 事件，若逐块播报会刷几十条重复文案；
-           这里按 `(攻占者, 被攻占者)` 在本刻内去重；
+           逐块发 `reason="inherit"` 事件；本刻按 `(攻占者, 被攻占者)` 去重；
         3. **文案不含回合号**：`"<A> captured <B>."`；回合号只填 `chat` 帧的 `turn` 字段，
            由前端 `chat.ts::renderLine` 渲染成独立的 `.turn` 元素（显示为 `A captured B. 37.`）。
         """
@@ -806,16 +806,13 @@ class Room:
         captures = list(getattr(report, "captures", []) or [])
         announced: set[tuple[str, str]] = set()
         for cap in sorted(captures, key=lambda c: int(getattr(c, "tile", 0))):
+            # R6.10：只有「攻陷王城 / 停止抵抗」才播；普通地块占领、转中立都不播。
+            if not getattr(cap, "captured_capital", False):
+                continue
             target_pid = getattr(cap, "previous_owner", None)
-            if target_pid is None:
-                # 占空地：不是「攻占某人的地」，不播。
-                continue
-            if getattr(cap, "reason", "arrive") not in ("arrive", "inherit"):
-                # `"neutral"`（R5.5 投降过渡期满转中立）没有攻占者，不播。
-                continue
             victor = getattr(cap, "new_owner", None)
-            if victor is None:
-                # 没有获胜方就不存在「谁攻占了谁」。
+            if target_pid is None or victor is None:
+                # 没有受方或没有攻占者，都不存在「谁攻占了谁」。
                 continue
             pair = (ident_of(victor), ident_of(target_pid))
             if pair in announced:
