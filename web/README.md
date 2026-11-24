@@ -16,42 +16,44 @@ src/core/             纯逻辑（无 DOM、无 canvas，可单测）
   client.ts           WebSocket 连接（自动重连、心跳、发送队列）
 src/render/            Canvas 绘制
   palette.ts          实测配色（玩家色 / 地块色 / UI 色）
-  camera.ts           正投影摄像机：居中、缩放档位、命中测试、可见范围
+  camera.ts           正投影摄像机：平移（不钳制）、以光标为锚点的缩放、命中测试、可见范围
   icons.ts            山峰 / 城堡 / 王冠 / 骷髅（矢量路径，缩放无关）
   painter.ts          paint(ctx, cam, state, chain, opts) 的唯一绘制入口
 src/ui/               DOM 面板（全部是压在 canvas 上的浮动层）
   turn.ts             Turn N / Turn N. 计数器
-  leaderboard.ts      ★ | Player | Army | Land
-  chat.ts             聊天与系统消息（顶部一条窄拖动条）
+  leaderboard.ts      ★ | Player | Army | Land（可折叠成「色块 + Army + Land」）
+  chat.ts             聊天与系统消息（顶部一条窄拖动条，可收起成「聊天 ▸」小按钮）
   floating.ts         makeDraggable：面板拖动 + localStorage 位置记忆
 src/input/            输入
   keyboard.ts         WASD / Q / E / ± / 方向键 / Enter
-  pointer.ts          点击选中、点击调兵、拖拽平移、滚轮缩放
+  pointer.ts          点击选中、点击调兵、拖拽平移、滚轮缩放（把光标坐标传给上层当锚点）
 src/main.ts           唯一装配点（把上面四层接起来）
 styles/               palette.css（CSS 变量）+ game.css + waiting.css
 public/fonts/         Quicksand 500/700（与原站一致的几何无衬线数字）
 scripts/shot.mjs      playwright-core + 本机 Edge 截图
-scripts/e2e-page.mjs  真浏览器 × 真后端联调（两个页面开局 + 断言 + 拖动记忆 + 截图）
+scripts/e2e-page.mjs  真浏览器 × 真后端联调（两个页面开局 + 断言 + 拖动记忆 + 交互细节 + 截图）
 ```
 
-## 布局：全屏地图 + 四个浮动面板
+## 布局：全屏地图 + 五个浮动面板
 
 地图 canvas 铺满整个视口（`position: fixed; inset: 0`），没有固定的侧边栏；
-回合 / Surrender / 排行榜 / 聊天都是浮在 canvas 之上的独立 DOM 层。
+回合 / Surrender / 全屏 / 排行榜 / 聊天都是浮在 canvas 之上的独立 DOM 层。
 
 | 面板 | 元素 | 默认位置 | 样式要点 |
 | --- | --- | --- | --- |
 | 回合计数（R1.2） | `#turn-counter` | 左上 `12,12` | 深色半透明底 + 白色 20px 粗体，文本 `Turn N` / `Turn N.` |
 | 投降 | `#surrender-button` | 顶部居中 | 白底青字（沿用原站样式） |
-| 排行榜（R6.8） | `#game-leaderboard-container` | 右上 `12,12` | 宽 300 px，表格外观不变 |
+| 全屏 | `#fullscreen-button` | 顶部居中 Surrender 右侧 | 白底青字，文案 `全屏` / `退出全屏` |
+| 排行榜（R6.8） | `#game-leaderboard-container` | 右上 `12,12` | 宽 300 px，表格外观不变；右下角外侧挂折叠按钮 |
 | 聊天（R6.10） | `#in-game-chat` | 右下 `12,12` | 宽 340 px、高 38vh，黑底灰字 |
 
 **可拖动 + 记忆位置**（`src/ui/floating.ts`）：
 
-- Pointer Events；移动阈值 4 px —— 阈值内视为点击，所以 **Surrender 仍是一颗能点的按钮**，
-  拖动结束后随之而来的那次 `click` 会被 `200ms` 的守卫吞掉，不会误触投降。
+- Pointer Events；移动阈值 4 px —— 阈值内视为点击，所以 **Surrender / 全屏仍是能点的按钮**，
+  拖动结束后随之而来的那次 `click` 会被 `200ms` 的守卫吞掉，不会误触。
 - 聊天面板用顶部 18 px 的 `.chat-drag-handle` 作握把，不与消息滚动、输入框抢事件；
-  其余三块整块可拖。
+  其余四块整块可拖。握把里的小按钮（`—` / `聊天 ▸`）自己决定是否让 `pointerdown` 冒泡：
+  展开按钮必须冒泡，否则收起后的面板（只剩那颗按钮）就拖不动了。
 - 拖动时把位置固化成 px 的 `left/top`（`right/bottom` 置 `auto`、清掉 `transform`），
   并 `z-index` 递增把该面板提到最前；位置写
   `localStorage['generals.panel.<元素 id>'] = {"left":…,"top":…}`。
@@ -89,8 +91,7 @@ scripts/e2e-page.mjs  真浏览器 × 真后端联调（两个页面开局 + 断
 
 `camera.ts` 是正投影：默认 `zoom = 1` 表示**整张地图正好铺满视口短边**（与原站存档页
 `#gameMap { width/height: size * --cell-size }` 一致），滚轮在 `ZOOM_LEVELS` 之间切换，
-拖拽平移，中心被 `clampCamera` 夹在地图内（地图比视口小时自动居中）。
-整个视口都能拖、能缩（面板区域除外，事件被面板自己吃掉）。
+拖拽 / 方向键平移，整个视口都能拖、能缩（面板区域除外，事件被面板自己吃掉）。
 
 坐标换算只有两条公式，别在别处重复实现：
 
@@ -98,6 +99,65 @@ scripts/e2e-page.mjs  真浏览器 × 真后端联调（两个页面开局 + 断
 屏幕 x = cam.width  / 2 + (col - cam.cx) * cell
 屏幕 y = cam.height / 2 + (row - cam.cy) * cell
 ```
+
+地图左上角（= 地块 0 的左上角）因此是 `width/2 - cx*cell, height/2 - cy*cell`，
+**不要**用「(视口 - 地图)/2」那种居中假设 —— 平移后地图并不居中。
+
+### 缩放以光标为锚点（`zoomAt`）
+
+`zoomAt(cam, direction, screenX, screenY)`：换档前后**光标下的那个地图点保持不动**。
+做法是把光标换算成世界坐标，换档得到新 `cell'`，再反解出让该世界坐标仍落在同一屏幕
+位置所需的中心：
+
+```
+col = (sx - width/2) / cell  + cx      →  cx' = col - (sx - width/2) / cell'
+row = (sy - height/2) / cell + cy      →  cy' = row - (sy - height/2) / cell'
+```
+
+`pointer.ts` 的 wheel 回调把光标坐标（相对画布左上角）一起交给上层 `onZoom(dir, x, y)`，
+`main.ts` 用它调 `zoomAt`。`zoomStep(cam, dir)` 仍保留导出（= 以视口中心为锚点），
+但主流程不再使用。
+
+### 不钳制地图位置
+
+`panPixels` / `panTiles` / `centerOnTile` / `zoomAt` **都不再把中心夹在地图内**，
+地图可以被拖到视口外任意位置（`clampCamera` 已删除）。只保留最小/最大缩放档位
+（`ZOOM_LEVELS` 不变）；开局时把镜头对到自己的首都（`centerOnTile`），不另做居中。
+
+中心远离地图时 `visibleRange()` 会给出空范围（`row0 > row1` / `col0 > col1`），
+`painter.paint()` 的 `for (row = row0; row <= row1; …)` 自然一次都不执行；
+地图完全移出视口后画布上只剩 `--bg-void` `#141414`（迷雾底色 `#393939` 随地图一起移走）。
+
+> 副作用（预期）：开局把镜头**精确**对到自己的首都，而首都常常靠地图边角，
+> 于是视口里会露出一块 `#141414` 非地图区（不再是「整图自动居中、全图可见」）。
+> 拖一下或缩一档就能把全图看全。
+
+## 全屏
+
+`#fullscreen-button`（白底青字，与 Surrender 同一套观感）默认在顶部居中 Surrender 右侧，
+和别的面板一样可拖、位置记在 `localStorage['generals.panel.fullscreen-button']`。
+
+- 点它：`document.fullscreenElement ? exitFullscreen() : documentElement.requestFullscreen()`
+  （Promise 拒绝——用户/策略拒绝——静默忽略）。
+- 文案随状态切换：`全屏` / `退出全屏`，并监听 `document.fullscreenchange` 同步；
+  进入/退出全屏会改变视口尺寸，所以在那里（和既有的 `window.resize`）都会调 `resize()`。
+- 浏览器没有 Fullscreen API（`!document.documentElement.requestFullscreen`）时按钮
+  `disabled`，`title` 说明原因。
+
+## 记分板折叠 / 聊天收起（都不记忆，刷新复位）
+
+两者都只是**本地 UI 状态，不发网络帧、不写 localStorage**。
+
+- **记分板折叠**：面板右下角外侧的 `#leaderboard-toggle`（`▾` / `▸`，title 写「折叠/展开记分板」）。
+  折叠态**没有表头、没有玩家名、没有星数**，每行只剩「玩家色块 + Army + Land」三个单元格
+  （色块沿用 `.leaderboard-name.<color>` 的背景色，已出局的数字格仍标灰 `--dead-row`）。
+  展开态与原来完全一致（`★ | Player | Army | Land`）。
+- **聊天收起**：拖动条右端的 `#chat-hide-button`（`—`）。收起后消息容器与输入框
+  `display: none`，面板缩成一颗白底青字的 `聊天 ▸` 小按钮（还在同一个拖动握把里，所以仍可拖）；
+  点它恢复完整面板（拖动条 / 消息 / 输入框 / placeholder 都不变）。
+  因为面板尺寸变化很大，`Chat.setCollapsed()` 在切换后会把已固化的 `left/top` 重新夹回视口，
+  否则「点展开」会让撑开的面板溢到屏幕外。
+  键盘 `Enter` 走到 `chat.focus()` 时，若聊天已收起会先自动展开再聚焦。
 
 ## 状态与网络
 
@@ -128,11 +188,28 @@ node scripts/e2e-page.mjs http://127.0.0.1:8000 out.png 5000
 
 > 截图脚本用 `playwright-core` + 本机 Edge（`channel: 'msedge'`），必须在 `web/` 目录下执行。
 > 联调脚本在 1600×900 视口下断言 canvas 为 1600×900、格边长 `900/size ∈ [50,75]`（R2.3）、
-> 四个浮动面板在视口内且覆盖在 canvas 之上，验证排行榜拖动后 `localStorage` 记住位置，
-> 并在 `?demo=1&demoRatio=0.5` 页验证「选中格有 `50%` 文字」与「按一次方向键后比例回 100%」。
+> 五个浮动面板（含 `#fullscreen-button`）在视口内且覆盖在 canvas 之上，验证排行榜拖动后
+> `localStorage` 记住位置，并在 `?demo=1&demoRatio=0.5` 页验证「选中格有 `50%` 文字」与
+> 「按一次方向键后比例回 100%」。此外在 `?demo=1` 页验交互细节：
+>
+> 1. **缩放锚点**：鼠标移到某点 → `wheel(0, -120)` 一次 → `tileAt(x, y)` 仍是同一格且 `cell` 变大；
+> 2. **无钳制平移**：把地图向左上拖 2700 px → `origin.x < -800`，画布采样只剩 `#141414`；
+> 3. **全屏按钮**：`#fullscreen-button` 存在；stub `requestFullscreen` 后点击，断言被调用；
+> 4. **记分板折叠**：折叠后表头 `Player/Army/Land` 与玩家名文本都消失，每行 3 个单元
+>    （色块 + 2 个数字），再点一次恢复；
+> 5. **聊天收起**：消息容器 `display: none`、展开按钮可见；展开后消息恢复且 `#chatroom-input` 可聚焦。
 
 ## 调试钩子
 
-`main.ts` 把只读快照挂到 `window.__generalsDebug()`：`{ size, cell, zoom, width, height,
-ratio, selected, chain, rect(i) }`。自动化脚本据此拿到真实几何（视野可能只有两三格，
-从像素反推格边长会得出荒谬数字），不改变任何游戏状态。
+`main.ts` 把只读快照挂到 `window.__generalsDebug()`：
+
+| 字段 | 含义 |
+| --- | --- |
+| `size / cell / zoom / width / height` | 地图边长、格边长（CSS px）、缩放档、视口尺寸 |
+| `origin` | 地图左上角的屏幕坐标（= 地块 0 的左上角；平移后可负、跑出视口） |
+| `ratio / selected / chain` | 调兵链：比例、选中地块、链长 |
+| `rect(i)` | 某格在屏幕上的矩形（含 gap / fill） |
+| `tileAt(x, y)` | 屏幕坐标（相对画布左上角的 CSS px）→ 地块索引，越界 `null` |
+
+自动化脚本据此拿到真实几何（视野可能只有两三格，从像素反推格边长会得出荒谬数字），
+不改变任何游戏状态。

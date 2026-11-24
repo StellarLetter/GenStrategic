@@ -8,6 +8,10 @@
  *     `▓ <本人色块> X left. 32.`
  *   首行常驻提示 `Chat is being recorded.`（无回合号、无颜色块）。
  *   输入框 placeholder：`按 [enter] 聊天，按 [tab] 打开表情选择器。`
+ *
+ * 收起（纯本地 UI 状态，不写 localStorage，刷新复位）：
+ *   拖动条右端有一颗 `—` 按钮；收起后消息与输入框全部隐藏，面板缩成一颗
+ *   「聊天 ▸」小按钮（仍然可拖），点它恢复完整面板。
  */
 
 import type { ClientState } from '../core/state';
@@ -20,11 +24,15 @@ const RECORDING_HINT = 'Chat is being recorded.';
 export class Chat {
   private readonly root: HTMLDivElement;
   private readonly handle: HTMLDivElement;
+  private readonly hideButton: HTMLButtonElement;
+  private readonly expandButton: HTMLButtonElement;
   private readonly messages: HTMLDivElement;
   private readonly input: HTMLInputElement;
   private rendered = 0;
   /** 常驻提示行只插一次，且与是否已有播报无关。 */
   private hinted = false;
+  /** 是否已收起（纯本地 UI 状态，不写 localStorage，刷新复位）。 */
+  private collapsed = false;
 
   onSend: (text: string) => void = () => {};
 
@@ -33,8 +41,28 @@ export class Chat {
     this.root.id = 'in-game-chat';
 
     // 顶部窄拖动条：面板整体作为浮动层时用它作 handle，不占消息滚动与输入框的交互。
+    // 收起后它仍然存在，且缩成一颗「聊天 ▸」小按钮 —— 所以面板收起后依然能拖。
     this.handle = document.createElement('div');
     this.handle.className = 'chat-drag-handle';
+
+    // 两个切换按钮。
+    //   · 隐藏按钮在展开态：按下时不冒泡到拖动握把（否则指针被面板捕获，click 落不到按钮上）；
+    //     握把其余 340 px 仍然可拖，不损失拖动能力。
+    //   · 展开按钮在收起态：它本身就是面板唯一可见的部分，**必须**能让 pointerdown 冒泡到
+    //     握把，否则收起后就拖不动了。冒泡后 click 会被重定向到握把，因此「展开」还挂在
+    //     面板根上兜底（见构造函数末尾），两条路径都是幂等的。
+    this.hideButton = makeToggle('chat-hide-button', '—', '隐藏聊天');
+    this.hideButton.addEventListener('pointerdown', (ev) => ev.stopPropagation());
+    this.hideButton.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      this.setCollapsed(true);
+    });
+    this.expandButton = makeToggle('chat-expand-button', '聊天 ▸', '展开聊天');
+    this.expandButton.addEventListener('click', (ev) => {
+      ev.stopPropagation();
+      this.setCollapsed(false);
+    });
+    this.handle.append(this.hideButton, this.expandButton);
 
     this.messages = document.createElement('div');
     this.messages.className = 'chat-messages-container';
@@ -50,6 +78,13 @@ export class Chat {
 
     this.root.append(this.handle, this.messages, wrapper);
     root.appendChild(this.root);
+    this.syncCollapsed();
+
+    // 收起态下点面板任意处（此时只剩「聊天 ▸」那一颗）都展开。
+    // 兜底用：展开按钮的 pointerdown 会让握把捕获指针，click 可能被重定向到握把而不是按钮。
+    this.root.addEventListener('click', () => {
+      if (this.collapsed) this.setCollapsed(false);
+    });
 
     this.input.addEventListener('keydown', (ev) => {
       if (ev.key === 'Enter') {
@@ -71,13 +106,46 @@ export class Chat {
     return this.root;
   }
 
-  /** 拖动握把：面板顶部的窄条。 */
+  /** 拖动握把：面板顶部的窄条（收起态下就是那颗「聊天 ▸」按钮所在的条）。 */
   get dragHandle(): HTMLDivElement {
     return this.handle;
   }
 
-  /** 键盘输入进入聊天框。 */
+  /** 收起 / 展开聊天（收起 = 消息与输入框全部隐藏，只留「聊天 ▸」小按钮）。 */
+  setCollapsed(collapsed: boolean): void {
+    if (collapsed === this.collapsed) return;
+    this.collapsed = collapsed;
+    this.root.classList.toggle('is-collapsed', collapsed);
+    this.syncCollapsed();
+    this.keepInViewport();
+    if (!collapsed) this.messages.scrollTop = this.messages.scrollHeight;
+  }
+
+  // 面板尺寸在收起/展开时变化很大（340×38vh ↔ 一颗小按钮）。若位置已经被拖动固化成
+  // px 的 left/top，这里把它按新尺寸重新夹回视口，否则「点展开」后整个面板会跑到屏幕外
+  // （pointerdown 时浮动层会把**收起态**的左上角固化成 left/top，随后撑开的宽度就溢出了）。
+  private keepInViewport(): void {
+    const { style } = this.root;
+    if (!style.left) return; // 未固化：仍用 CSS 的 right/bottom 锚点，无需处理
+    const left = Number.parseFloat(style.left);
+    const top = Number.parseFloat(style.top);
+    if (!Number.isFinite(left) || !Number.isFinite(top)) return;
+    const w = this.root.offsetWidth;
+    const h = this.root.offsetHeight;
+    const maxLeft = Math.max(0, window.innerWidth - w);
+    const maxTop = Math.max(0, window.innerHeight - h);
+    style.left = `${Math.round(Math.min(maxLeft, Math.max(0, left)))}px`;
+    style.top = `${Math.round(Math.min(maxTop, Math.max(0, top)))}px`;
+  }
+
+  private syncCollapsed(): void {
+    this.hideButton.hidden = this.collapsed;
+    this.expandButton.hidden = !this.collapsed;
+  }
+
+  /** 键盘输入进入聊天框；若聊天已收起，先展开再聚焦。 */
   focus(): void {
+    this.setCollapsed(false);
     this.input.focus();
   }
 
@@ -100,6 +168,17 @@ export class Chat {
     this.rendered = state.chat.length;
     this.messages.scrollTop = this.messages.scrollHeight;
   }
+}
+
+/** 拖动条里的小切换按钮（收起 / 展开）；事件绑定由调用方决定。 */
+function makeToggle(id: string, text: string, title: string): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.id = id;
+  btn.className = 'chat-toggle';
+  btn.textContent = text;
+  btn.title = title;
+  return btn;
 }
 
 function colorSwatch(name: ColorName): HTMLSpanElement {

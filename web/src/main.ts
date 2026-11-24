@@ -28,7 +28,7 @@ import { step } from './core/geometry';
 import type { ClientFrame, ServerFrame } from './core/types';
 import { bindKeyboard } from './input/keyboard';
 import { bindPointer } from './input/pointer';
-import { cellSize, centerOnTile, hitTest, makeCamera, panPixels, panTiles, tileRect, zoomStep, type Camera } from './render/camera';
+import { cellSize, hitTest, makeCamera, mapOrigin, panPixels, panTiles, tileRect, zoomAt, type Camera } from './render/camera';
 import { paint } from './render/painter';
 import { Chat } from './ui/chat';
 import { makeDraggable } from './ui/floating';
@@ -70,15 +70,46 @@ surrenderButton.id = 'surrender-button';
 surrenderButton.textContent = 'Surrender';
 page.appendChild(surrenderButton);
 
+// 全屏按钮：白底青字，默认在顶部居中 Surrender 右侧；和别的面板一样可拖、位置记忆。
+const fullscreenButton = document.createElement('button');
+fullscreenButton.id = 'fullscreen-button';
+page.appendChild(fullscreenButton);
+
+/** 浏览器是否提供 Fullscreen API（不支持时按钮 disabled，并用 title 说明）。 */
+const FULLSCREEN_SUPPORTED = typeof document.documentElement.requestFullscreen === 'function';
+if (!FULLSCREEN_SUPPORTED) {
+  fullscreenButton.disabled = true;
+  fullscreenButton.title = '当前浏览器不支持全屏 API（Fullscreen API）';
+}
+
+/** 文案随全屏状态切换（`fullscreenchange` 也会回来同步一次）。 */
+function syncFullscreenLabel(): void {
+  fullscreenButton.textContent = document.fullscreenElement ? '退出全屏' : '全屏';
+}
+syncFullscreenLabel();
+
+async function toggleFullscreen(): Promise<void> {
+  if (!FULLSCREEN_SUPPORTED) return;
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await document.documentElement.requestFullscreen();
+  } catch {
+    // 用户拒绝 / 浏览器策略拒绝：保持原状，文案由 fullscreenchange 兜底。
+  }
+  syncFullscreenLabel();
+  resize();
+}
+
 const turnCounter = new TurnCounter(page);
 const leaderboard = new Leaderboard(page);
 const chat = new Chat(page);
 
-// 四个浮动面板：可拖动，位置存 localStorage['generals.panel.<id>']（见 ui/floating.ts）。
+// 五个浮动面板：可拖动，位置存 localStorage['generals.panel.<id>']（见 ui/floating.ts）。
 // 面板是独立 DOM 层，panel 上的 pointer 事件不会落到 canvas 上，点击面板不会选中地块。
-// Surrender 整块可拖：拖动阈值内的 pointerup 仍按点击处理，点它照常投降。
+// Surrender / 全屏整块可拖：拖动阈值内的 pointerup 仍按点击处理，点它们照常生效。
 makeDraggable(turnCounter.element);
 makeDraggable(surrenderButton);
+makeDraggable(fullscreenButton);
 makeDraggable(leaderboard.element);
 makeDraggable(chat.element, { handle: chat.dragHandle });
 
@@ -88,8 +119,6 @@ let state: ClientState = emptyState(20);
 let chain: ChainState = initialChain();
 let cam: Camera = makeCamera(state.size, 800, 800, 1);
 let clickMove = true;
-/** 开局后待执行「镜头对准自己的首都」。 */
-let pendingRecenter = false;
 
 const client = new GameClient(defaultWsUrl());
 
@@ -146,19 +175,6 @@ function pruneSelection(): void {
 
 // ------------------------------------------------------------ 输入
 
-function playerHomeTile(): number | null {
-  if (state.me === null) return null;
-  for (const [i, t] of state.tiles.entries()) if (t.owner === state.me) return i;
-  return null;
-}
-
-function centerOnMe(): boolean {
-  const home = playerHomeTile();
-  if (home === null) return false;
-  cam = centerOnTile(cam, home);
-  return true;
-}
-
 function submitMove(dir: 'up' | 'down' | 'left' | 'right'): void {
   const blocked = (i: number): boolean => state.tiles[i]?.terrain === 2 && state.tiles[i]!.seen;
   const res = pushMove(chain, dir, cam.size, blocked);
@@ -191,8 +207,9 @@ bindPointer(canvas, {
     cam = panPixels(cam, dx, dy);
     draw();
   },
-  onZoom: (dir) => {
-    cam = zoomStep(cam, dir);
+  onZoom: (dir, x, y) => {
+    // 以光标下的那个地图点为锚点缩放：缩放前后该点保持不动（camera.zoomAt）。
+    cam = zoomAt(cam, dir, x, y);
     draw();
   },
 });
@@ -231,6 +248,14 @@ surrenderButton.addEventListener('click', () => {
   if (DEMO) return;
   if (window.confirm('确定要投降吗？（将进入 40 Tick 过渡期）')) send({ t: 'surrender' });
 });
+fullscreenButton.addEventListener('click', () => {
+  void toggleFullscreen();
+});
+// 进入/退出全屏都会改变视口尺寸：同步文案并重算画布（canvas 铺满视口，R6.14）。
+document.addEventListener('fullscreenchange', () => {
+  syncFullscreenLabel();
+  resize();
+});
 
 window.addEventListener('resize', resize);
 
@@ -240,11 +265,9 @@ client.onFrame = (frame: ServerFrame) => {
   const isStart = frame.t === 'game_start';
   state = applyFrame(state, frame);
   if (isStart) {
+    // 开局把镜头交给 makeCamera：整图正好铺满视口短边并居中（不再「对准自己的首都」——
+    // 平移已不钳制（R6.15），对准首都反而会把地图推到视口外、露一片非地图区）。
     cam = makeCamera(state.size, cam.width, cam.height, cam.dpr);
-  }
-  if (frame.t === 'tiles' && pendingRecenter && state.me !== null) {
-    // 开局后第一次收到视野增量时，把镜头对到自己的首都（R6.1）。
-    if (centerOnMe()) pendingRecenter = false;
   }
   if (frame.t === 'commands') {
     // 服务端 `commands` 是权威快照（R6.3）。作废后链会变短，必须整份覆盖，
@@ -252,7 +275,6 @@ client.onFrame = (frame: ServerFrame) => {
     chain = { ...chain, chain: state.chain };
     pruneSelection();
   }
-  if (isStart && state.me !== null) pendingRecenter = true;
   draw();
 };
 
@@ -468,6 +490,11 @@ export function debugSnapshot(): {
  *
  * 有了它，自动化就不必从像素反推格边长 —— 视野可能只有两三格，按「网格线间距」
  * 反推会得出荒谬的数字（例如把两块相距很远的可见区当成相邻格子）。
+ *
+ * 字段：`size / cell / zoom / width / height`（几何）、`origin`（地图左上角的屏幕坐标，
+ * 平移无钳制后可能为负）、`ratio / selected / chain`（调兵链），以及
+ * `rect(i)`（某格矩形）与 `tileAt(x, y)`（屏幕坐标 → 地块索引），
+ * 后者用于验证「滚轮缩放以光标为锚点」。
  */
 declare global {
   interface Window {
@@ -477,10 +504,14 @@ declare global {
       zoom: number;
       width: number;
       height: number;
+      /** 地图左上角的屏幕坐标（无钳制平移后可能为负、跑出视口）。 */
+      origin: { x: number; y: number };
       ratio: number;
       selected: number | null;
       chain: number;
       rect: (i: number) => { x: number; y: number; w: number; fill: number; gap: number };
+      /** 屏幕坐标（相对画布左上角的 CSS 像素）→ 地块索引；越界 null。 */
+      tileAt: (x: number, y: number) => number | null;
     };
   }
 }
@@ -491,8 +522,10 @@ window.__generalsDebug = () => ({
   zoom: cam.zoom,
   width: cam.width,
   height: cam.height,
+  origin: mapOrigin(cam),
   ratio: chain.ratio,
   selected: chain.selected,
   chain: chain.chain.length,
   rect: (i: number) => tileRect(cam, i),
+  tileAt: (x: number, y: number) => hitTest(cam, x, y),
 });

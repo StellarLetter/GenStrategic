@@ -2,10 +2,11 @@
  * game.css — 游戏页布局与面板样式。
  *
  * 视觉基准：SaveWeb/屏幕截图 2026-11-18 190745.png（原站：地图占左 ~75%，右侧 25% 面板）。
- * 本项目改为 **全屏地图 + 四个浮动面板**：
+ * 本项目改为 **全屏地图 + 浮动面板**：
  *   - canvas 铺满整个视口；地图之外的部分用 --bg-void（比 --bg-page 更深的灰）；
- *   - 回合计数器在左上、Surrender 在顶部居中、排行榜在右上（约 300px）、聊天在右下（约 340px）；
+ *   - 回合计数器在左上、Surrender 与全屏在顶部居中、排行榜在右上（约 300px）、聊天在右下（约 340px）；
  *   - 每个面板都可拖动（pointer 拖动阈值见 src/ui/floating.ts），位置记在 localStorage。
+ *   - 排行榜可折叠、聊天可收起（两者都只是本地 UI 状态，刷新复位）。
  */
 
 #react-container,
@@ -31,6 +32,7 @@
 
 #turn-counter,
 #surrender-button,
+#fullscreen-button,
 #game-leaderboard-container,
 #in-game-chat {
   position: fixed;
@@ -55,10 +57,11 @@
   user-select: none;
 }
 
-/* ---------------------------------------------------------- Start / Surrender */
+/* ---------------------------------------------------------- Start / Surrender / 全屏 */
 
 #start-button,
-#surrender-button {
+#surrender-button,
+#fullscreen-button {
   position: fixed;
   padding: 10px 26px;
   font-size: 17px;
@@ -86,13 +89,33 @@
   user-select: none;
 }
 
+/* 全屏：默认在 Surrender 右侧（Surrender 宽约 142 px，这里让按钮中心右移 140 px，
+   与它的右边缘留出一点缝）。文案在「全屏 / 退出全屏」之间切换，宽度随之变化。 */
+#fullscreen-button {
+  top: 12px;
+  left: 50%;
+  transform: translateX(calc(-50% + 140px));
+  white-space: nowrap;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+
+#fullscreen-button:disabled {
+  color: #777777;
+  background: #cfcfcf;
+  cursor: not-allowed;
+}
+
 #start-button[hidden],
-#surrender-button[hidden] {
+#surrender-button[hidden],
+#fullscreen-button[hidden] {
   display: none;
 }
 
 #start-button:hover,
-#surrender-button:hover {
+#surrender-button:hover,
+#fullscreen-button:hover:not(:disabled) {
   color: #ffffff;
   background: var(--accent);
 }
@@ -126,7 +149,8 @@
   text-overflow: ellipsis;
 }
 
-#game-leaderboard tr:first-child td {
+/* 表头行（玩家行带 .lb-row，折叠态下没有表头，这条规则自然也就不再命中任何行）。 */
+#game-leaderboard tr:first-child:not(.lb-row) td {
   text-align: center;
   font-weight: 700;
   color: #ffffff;
@@ -207,6 +231,49 @@
 .leaderboard-name.maroon { background: var(--color-maroon); }
 .leaderboard-name.orange { background: var(--color-orange); }
 
+/* 折叠/展开切换按钮：吊在面板右下角外侧（不压住表头与任何一行）。 */
+#leaderboard-toggle {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: 2px;
+  width: 22px;
+  height: 18px;
+  padding: 0;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 16px;
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 0;
+  cursor: pointer;
+}
+
+#leaderboard-toggle:hover {
+  color: #ffffff;
+  background: var(--accent);
+}
+
+/* 折叠态：没有表头、没有星数、没有玩家名，每行只剩「玩家色块 + Army + Land」。
+   色块沿用 .leaderboard-name.<color> 的背景色（该单元格在折叠态不塞任何文本）。 */
+#game-leaderboard-container.is-collapsed #game-leaderboard td.leaderboard-name {
+  width: 22%;
+  padding-left: 0;
+}
+
+#game-leaderboard-container.is-collapsed #game-leaderboard td.lb-number {
+  width: 39%;
+  text-align: center;
+  color: #ffffff;
+  background: var(--bg-page);
+}
+
+#game-leaderboard-container.is-collapsed #game-leaderboard tr.dead td.lb-number {
+  background: var(--dead-row);
+  color: #ffffff;
+}
+
 /* ---------------------------------------------------------- 聊天 */
 
 #in-game-chat {
@@ -224,6 +291,7 @@
 
 /* 顶部窄拖动条：聊天内容的滚动与输入框都不受影响。 */
 .chat-drag-handle {
+  position: relative;
   flex: 0 0 auto;
   height: 18px;
   background-color: rgba(255, 255, 255, 0.08);
@@ -238,6 +306,70 @@
 
 .chat-drag-handle:hover {
   background-color: rgba(255, 255, 255, 0.16);
+}
+
+/* 收起 / 展开按钮（收起后握把里只剩「聊天 ▸」这一颗）。 */
+.chat-toggle {
+  position: absolute;
+  top: 2px;
+  right: 3px;
+  height: 14px;
+  padding: 0 5px;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 12px;
+  color: var(--accent);
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.chat-toggle[hidden] {
+  display: none;
+}
+
+.chat-toggle:hover {
+  color: #ffffff;
+  background: var(--accent);
+}
+
+/* 收起态：消息与输入框全部隐藏，面板缩成一颗「聊天 ▸」小按钮（握把还在，所以仍可拖）。
+   收起只是本地 UI 状态，刷新即复位。 */
+#in-game-chat.is-collapsed {
+  width: auto;
+  height: auto;
+  background: transparent;
+  box-shadow: none;
+}
+
+#in-game-chat.is-collapsed .chat-drag-handle {
+  display: flex;
+  height: auto;
+  background: none;
+}
+
+#in-game-chat.is-collapsed .chat-messages-container,
+#in-game-chat.is-collapsed .chat-input-wrapper {
+  display: none;
+}
+
+#in-game-chat.is-collapsed .chat-toggle {
+  position: static;
+  height: auto;
+  padding: 5px 12px;
+  font-size: 13px;
+  line-height: 1.2;
+  color: var(--accent);
+  background: #ffffff;
+  border: none;
+  border-radius: 0;
+  cursor: move;
+}
+
+#in-game-chat.is-collapsed .chat-toggle:hover {
+  color: #ffffff;
+  background: var(--accent);
 }
 
 .chat-messages-container {
@@ -303,3 +435,7 @@
 }
 
 /* 调兵作废（R4.12 chain_dropped）不弹提示：直接按权威快照静默清空调兵链与其渲染。 */
+
+/* ---------------------------------------------------------- 策略接管面板 */
+/* 默认在回合计数器下方（左上），窄条样式，不与排行榜/聊天抢位置。 */
+

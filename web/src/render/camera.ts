@@ -4,6 +4,10 @@
  * 地图为正方形（R2.1）。默认视野 = **整张地图正好铺满可用区域**（与原站存档页的
  * `#gameMap { width/height: size * --cell-size }` 一致）；缩放在此基础上倍率变化。
  *
+ * 位置**不做任何钳制**：中心 (cx, cy) 可以落在 [0, size] 之外，地图因此能被拖到视口外
+ * 任意位置（滚轮缩放时以光标下的地图点为锚点，见 `zoomAt`）。中心远离地图时
+ * `visibleRange` 会给出空范围（row0 > row1 / col0 > col1），绘制循环自然不画任何格子。
+ *
  * 契约：纯函数、无 DOM、无副作用（INTERFACES §4）。
  */
 
@@ -35,53 +39,68 @@ export function mapPixels(cam: Camera): number {
   return cellSize(cam) * cam.size;
 }
 
-/** 地图左上角的屏幕坐标。 */
+/**
+ * 地图左上角的屏幕坐标（= 地块 0 的左上角）。
+ *
+ * 必须由中心算出（而**不是**「视口居中」的假设）：平移后地图会离开居中位置，
+ * 中心远离地图时这个坐标会跑到视口外、甚至为负。
+ */
 export function mapOrigin(cam: Camera): { x: number; y: number } {
-  const m = mapPixels(cam);
-  return { x: (cam.width - m) / 2, y: (cam.height - m) / 2 };
-}
-
-/** 新建摄像机：居中于地图中心，整图铺满。 */
-export function makeCamera(size: number, width: number, height: number, dpr: number): Camera {
-  return clampCamera({ size, cx: size / 2, cy: size / 2, width, height, zoom: 1, dpr });
-}
-
-/** 把摄像机中心夹紧，保证可视区域不跑出地图（地图比视口小则居中）。 */
-export function clampCamera(cam: Camera): Camera {
   const cell = cellSize(cam);
-  const halfW = cam.width / 2 / cell;
-  const halfH = cam.height / 2 / cell;
-  let { cx, cy } = cam;
-  if (halfW * 2 >= cam.size) cx = cam.size / 2;
-  else cx = Math.min(Math.max(cx, halfW), cam.size - halfW);
-  if (halfH * 2 >= cam.size) cy = cam.size / 2;
-  else cy = Math.min(Math.max(cy, halfH), cam.size - halfH);
-  return { ...cam, cx, cy };
+  return { x: cam.width / 2 - cam.cx * cell, y: cam.height / 2 - cam.cy * cell };
+}
+
+/** 新建摄像机：居中于地图中心，整图铺满（位置不钳制）。 */
+export function makeCamera(size: number, width: number, height: number, dpr: number): Camera {
+  return { size, cx: size / 2, cy: size / 2, width, height, zoom: 1, dpr };
 }
 
 /** 居中到某个地块。 */
 export function centerOnTile(cam: Camera, index: number): Camera {
   const row = Math.floor(index / cam.size);
   const col = index % cam.size;
-  return clampCamera({ ...cam, cx: col + 0.5, cy: row + 0.5 });
+  return { ...cam, cx: col + 0.5, cy: row + 0.5 };
 }
 
-/** 以像素为单位平移（拖拽时用）。 */
+/** 以像素为单位平移（拖拽时用）。地图可以被拖到视口外任意位置，不夹回。 */
 export function panPixels(cam: Camera, dx: number, dy: number): Camera {
   const cell = cellSize(cam);
-  return clampCamera({ ...cam, cx: cam.cx - dx / cell, cy: cam.cy - dy / cell });
+  return { ...cam, cx: cam.cx - dx / cell, cy: cam.cy - dy / cell };
 }
 
 /** 以地块为单位平移（方向键用）。 */
 export function panTiles(cam: Camera, dx: number, dy: number): Camera {
-  return clampCamera({ ...cam, cx: cam.cx + dx, cy: cam.cy + dy });
+  return { ...cam, cx: cam.cx + dx, cy: cam.cy + dy };
 }
 
-/** 缩放到下一档/上一档。 */
+/** 缩放到下一档/上一档（以视口中心为锚点，等价于 `zoomAt` 传入视口中心）。 */
 export function zoomStep(cam: Camera, direction: 1 | -1): Camera {
+  return zoomAt(cam, direction, cam.width / 2, cam.height / 2);
+}
+
+/**
+ * 以屏幕点 (screenX, screenY)（相对画布左上角的 CSS 像素）为锚点缩放一档：
+ * **光标下的那个地图点保持不动**。
+ *
+ * 推导：把光标换算成世界坐标，换档得到新 cell'，再反解出让该世界坐标仍落在
+ * 同一屏幕坐标所需的中心：
+ *
+ *   col  = (sx - width  / 2) / cell  + cx      →  cx' = col - (sx - width  / 2) / cell'
+ *   row  = (sy - height / 2) / cell  + cy      →  cy' = row - (sy - height / 2) / cell'
+ */
+export function zoomAt(cam: Camera, direction: 1 | -1, screenX: number, screenY: number): Camera {
   const i = nearestZoomIndex(cam.zoom);
   const next = Math.min(ZOOM_LEVELS.length - 1, Math.max(0, i + direction));
-  return clampCamera({ ...cam, zoom: ZOOM_LEVELS[next]! });
+  const zoom = ZOOM_LEVELS[next]!;
+  if (zoom === cam.zoom) return cam;
+
+  const cell = cellSize(cam);
+  const nextCell = cellSize({ ...cam, zoom });
+  const offsetX = screenX - cam.width / 2;
+  const offsetY = screenY - cam.height / 2;
+  const col = offsetX / cell + cam.cx;
+  const row = offsetY / cell + cam.cy;
+  return { ...cam, zoom, cx: col - offsetX / nextCell, cy: row - offsetY / nextCell };
 }
 
 function nearestZoomIndex(zoom: number): number {
@@ -136,7 +155,10 @@ export function hitTest(cam: Camera, screenX: number, screenY: number): number |
   return row * cam.size + col;
 }
 
-/** 当前可见地块范围（含半格余量），用于裁剪绘制。 */
+/**
+ * 当前可见地块范围（含半格余量），用于裁剪绘制。
+ * 中心远离地图时返回空范围（row0 > row1 / col0 > col1），调用方的 for 循环自然一次都不执行。
+ */
 export function visibleRange(cam: Camera): {
   row0: number;
   row1: number;

@@ -1,5 +1,5 @@
 /**
- * pointer.ts — 鼠标：点击选中 / 点击调兵 / 拖拽平移 / 滚轮缩放。
+ * pointer.ts — 鼠标：点击选中 / 点击调兵 / 拖拽平移 / 滚轮缩放（以光标为锚点）。
  *
  * 规则引用：
  *   R6.1 点击选中地块
@@ -12,7 +12,8 @@ export interface PointerHandlers {
   hitTest: (x: number, y: number) => number | null;
   onClickTile: (index: number) => void;
   onPanPixels: (dx: number, dy: number) => void;
-  onZoom: (direction: 1 | -1) => void;
+  /** 滚轮缩放；x/y 是光标位置（相对画布左上角的 CSS 像素），用作缩放锚点。 */
+  onZoom: (direction: 1 | -1, x: number, y: number) => void;
 }
 
 const DRAG_THRESHOLD = 4;
@@ -56,7 +57,9 @@ export function bindPointer(el: HTMLCanvasElement, h: PointerHandlers): () => vo
 
   const onWheel = (ev: WheelEvent): void => {
     ev.preventDefault();
-    h.onZoom(ev.deltaY > 0 ? -1 : 1);
+    // 把光标位置一并交给上层：缩放以光标下的地图点为锚点（camera.zoomAt）。
+    const rect = el.getBoundingClientRect();
+    h.onZoom(ev.deltaY > 0 ? -1 : 1, ev.clientX - rect.left, ev.clientY - rect.top);
   };
 
   el.addEventListener('pointerdown', onDown);

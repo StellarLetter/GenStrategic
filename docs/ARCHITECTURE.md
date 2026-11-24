@@ -169,7 +169,7 @@ WebSocket 客户端 → client.ts 解帧 → state.ts 应用 → render + ui 重
 
 - **正投影**：地图为正方形。摄像机 `zoom = 1` 表示**整张地图正好铺满视口短边**
   （等价于原站存档页 `#gameMap { width/height: size * --cell-size }`），滚轮在 `ZOOM_LEVELS`
-  之间切换，拖拽平移，中心被夹在地图内（地图比视口小时自动居中）。
+  之间切换，拖拽平移；**位置不钳制**——地图可拖到视口任意位置乃至移出视口（R6.15），缩放以光标为锚点（`camera.zoomAt`）。
 - **配色**：`render/palette.ts` 定义 8 个玩家色（`red/blue/green/teal/purple/pink/maroon/orange`）
   + 中立平原 `#dcdcdc` / 山地 `#acacac` / 中立城市 `#808080` / 地图底与视野外 `#393939` /
   网格线 `#000000` / 页面底 `#222222`，全部取自截图实测像素。

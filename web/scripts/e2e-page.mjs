@@ -5,9 +5,13 @@
  *   ① 开两个页面（Alice / Bob）加入同一房间；
  *   ② 让 Bob 点 Start 开局；
  *   ③ 等 3 秒（约 6 Tick）后截图，并断言画布尺寸、格边长（随 R2.3 的人数定尺寸而变）、
- *      迷雾底色、己方色块、四个浮动面板（存在 / 在视口内 / 覆盖在 canvas 之上）、
+ *      迷雾底色、己方色块、五个浮动面板（存在 / 在视口内 / 覆盖在 canvas 之上）、
  *      回合文本、聊天栏首行提示；
  *   ④ 拖动排行榜 80 px：断言 left 变化、localStorage 记下了位置，且新开页面能恢复该位置。
+ *
+ * 另外在 `?demo=1` 的本地演示页上验交互细节（`checkViewportUi`）：
+ *   缩放以光标为锚点、无钳制平移（地图可完全拖出视口）、全屏按钮、
+ *   记分板折叠、聊天收起/展开。
  *
  * 阈值说明：全屏地图布局 —— 视口 1600×900 ⇒ canvas 1600×900（AGENT.md §5 的 UI 布局）；
  *   地图边长 = min(1600,900) = 900，2 人局 size ∈ [12,18]（R2.3）⇒ 格边长 = 900/size ∈ [50,75]。
@@ -27,7 +31,13 @@ const room = `live-${Date.now().toString(36)}`;
 const waitMs = Number(process.argv[4] ?? 3500);
 
 const VIEWPORT = { width: 1600, height: 900 };
-const PANEL_IDS = ['turn-counter', 'surrender-button', 'game-leaderboard-container', 'in-game-chat'];
+const PANEL_IDS = [
+  'turn-counter',
+  'surrender-button',
+  'fullscreen-button',
+  'game-leaderboard-container',
+  'in-game-chat',
+];
 const LB_KEY = 'generals.panel.game-leaderboard-container';
 
 const errors = [];
@@ -199,6 +209,235 @@ async function checkRatio(context, base) {
   };
 }
 
+/** demo 页里读几何快照（tileAt / cell 用的都是相对 canvas 左上角的坐标）。 */
+const readGeo = (page) =>
+  page.evaluate(() => {
+    const g = window.__generalsDebug;
+    if (!g) return null;
+    const s = g();
+    return {
+      cell: s.cell,
+      zoom: s.zoom,
+      size: s.size,
+      origin: s.origin,
+      width: s.width,
+      height: s.height,
+    };
+  });
+
+/**
+ * R6.14 的交互补充断言（`?demo=1` 本地演示页，不连服务端）：
+ *   ① 缩放锚点：滚轮缩放前后，光标下的地块必须是同一格（且 cell 变大）；
+ *   ② 无钳制平移：把地图向左上拖到完全离开视口后，origin 跑出视口、画布只剩 #141414；
+ *   ③ 全屏按钮：存在；点它会调用 documentElement.requestFullscreen（headless 下不真进全屏）；
+ *   ④ 记分板折叠：折叠后没有表头 / 没有玩家名 / 每行只剩 2 个数字单元；再点恢复；
+ *   ⑤ 聊天收起：消息容器不可见、展开按钮可见；展开后输入框可聚焦。
+ * 返回 { ok, reasons, …观测值 }。
+ */
+async function checkViewportUi(context, base) {
+  const reasons = [];
+  const page = await context.newPage();
+  watch(page, 'ui2');
+  await page.goto(`${base}/?demo=1`, { waitUntil: 'networkidle' });
+  await page.waitForTimeout(400);
+
+  const canvasBox = await page.locator('canvas').boundingBox();
+  if (!canvasBox) {
+    await page.close();
+    return { ok: false, reasons: ['demo 页拿不到 canvas 矩形'] };
+  }
+  const tileAt = (x, y) =>
+    page.evaluate(
+      ([tx, ty]) => {
+        const g = window.__generalsDebug;
+        return g ? g().tileAt(tx, ty) : null;
+      },
+      [x, y],
+    );
+
+  // ---------------------------------------------------------------- ① 缩放锚点
+  const geoBefore = await readGeo(page);
+  const ax = Math.round(canvasBox.x + canvasBox.width * 0.42);
+  const ay = Math.round(canvasBox.y + canvasBox.height * 0.55);
+  const tileBefore = await tileAt(ax - canvasBox.x, ay - canvasBox.y);
+  await page.mouse.move(ax, ay);
+  await page.mouse.wheel(0, -120);
+  await page.waitForTimeout(200);
+  const tileAfter = await tileAt(ax - canvasBox.x, ay - canvasBox.y);
+  const geoAfter = await readGeo(page);
+  const zoom = { tileBefore, tileAfter, geoBefore, geoAfter };
+
+  if (!geoBefore || !geoAfter) reasons.push('缩放前后拿不到 __generalsDebug 快照');
+  if (tileBefore === null) reasons.push('缩放锚点的测试点不在地图上（演示页几何异常）');
+  else if (tileAfter !== tileBefore) {
+    reasons.push(`滚轮缩放后光标下的地块变了（${tileBefore} → ${tileAfter}），锚点没锁住`);
+  }
+  if (geoBefore && geoAfter && !(geoAfter.cell > geoBefore.cell)) {
+    reasons.push(`向上滚一格后格边长应变大：${geoBefore.cell} → ${geoAfter.cell}`);
+  }
+
+  // ---------------------------------------------------------------- ③ 全屏按钮
+  const fsButton = page.locator('#fullscreen-button');
+  const fsCount = await fsButton.count();
+  if (fsCount !== 1) reasons.push(`#fullscreen-button 不存在（count=${fsCount}）`);
+  let fsLabel = null;
+  let fsCalled = null;
+  if (fsCount === 1) {
+    fsLabel = (await fsButton.textContent())?.trim() ?? null;
+    await page.evaluate(() => {
+      window.__fsCalled = false;
+      // headless 下不真进全屏：只记录调用（真实浏览器里这会切到 fullscreen）。
+      document.documentElement.requestFullscreen = () => {
+        window.__fsCalled = true;
+        return Promise.resolve();
+      };
+    });
+    await fsButton.click();
+    await page.waitForTimeout(150);
+    fsCalled = await page.evaluate(() => window.__fsCalled === true);
+    if (fsCalled !== true) reasons.push('点击 #fullscreen-button 没有调用 requestFullscreen');
+  }
+
+  // ---------------------------------------------------------------- ④ 记分板折叠
+  const lbState = () =>
+    page.evaluate(() => {
+      const tbody = document.querySelector('#game-leaderboard tbody');
+      const trs = tbody ? Array.from(tbody.children) : [];
+      const names = Array.from(document.querySelectorAll('#game-leaderboard .leaderboard-name'));
+      return {
+        rows: trs.length,
+        firstRowCells: trs[0] ? trs[0].children.length : 0,
+        // 每行的「数字单元」个数：Army / Land 两格。
+        numericPerRow: trs.map((tr) => tr.querySelectorAll('.lb-number').length),
+        nameTexts: names.map((el) => (el.textContent ?? '').trim()),
+        headerText: trs[0] ? (trs[0].textContent ?? '') : '',
+        tableText: (document.querySelector('#game-leaderboard')?.textContent ?? '').trim(),
+      };
+    });
+  const lbExpandedBefore = await lbState();
+  await page.locator('#leaderboard-toggle').click();
+  await page.waitForTimeout(120);
+  const lbCollapsed = await lbState();
+  await page.locator('#leaderboard-toggle').click();
+  await page.waitForTimeout(120);
+  const lbRestored = await lbState();
+
+  if (!/Player/.test(lbExpandedBefore.headerText) || !/Land/.test(lbExpandedBefore.headerText)) {
+    reasons.push(`展开态记分板表头缺 Player/Land：${JSON.stringify(lbExpandedBefore.headerText)}`);
+  }
+  if (lbCollapsed.headerText.includes('Player') || lbCollapsed.headerText.includes('Army') || lbCollapsed.headerText.includes('Land')) {
+    reasons.push(`折叠后表头仍在：${JSON.stringify(lbCollapsed.headerText)}`);
+  }
+  if (lbCollapsed.tableText.includes('Player') || lbCollapsed.tableText.includes('Army') || lbCollapsed.tableText.includes('Land')) {
+    reasons.push('折叠后记分板里仍能读到表头文本');
+  }
+  if (lbCollapsed.nameTexts.some((t) => t !== '')) {
+    reasons.push(`折叠后仍有玩家名文本：${JSON.stringify(lbCollapsed.nameTexts)}`);
+  }
+  if (lbCollapsed.rows < 2) reasons.push(`折叠后记分板行数只有 ${lbCollapsed.rows}`);
+  if (lbCollapsed.numericPerRow.some((n) => n !== 2)) {
+    reasons.push(`折叠后每行应有 2 个数字单元，实际 ${JSON.stringify(lbCollapsed.numericPerRow)}`);
+  }
+  if (lbCollapsed.firstRowCells !== 3) {
+    reasons.push(`折叠后每行应是「色块 + 2 个数字」3 个单元，实际 ${lbCollapsed.firstRowCells}`);
+  }
+  if (!/Player/.test(lbRestored.headerText) || !lbRestored.nameTexts.some((t) => t !== '')) {
+    reasons.push('再点一次后记分板没有恢复成带表头/带名字的展开态');
+  }
+
+  // ---------------------------------------------------------------- ⑤ 聊天收起 / 展开
+  const chatState = () =>
+    page.evaluate(() => {
+      const messages = document.querySelector('#in-game-chat .chat-messages-container');
+      const expand = document.querySelector('#chat-expand-button');
+      const hide = document.querySelector('#chat-hide-button');
+      const box = (el) => {
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+        return { display: cs.display, w: Math.round(r.width), h: Math.round(r.height), visible: cs.display !== 'none' && r.width > 0 && r.height > 0 };
+      };
+      return { messages: box(messages), expand: box(expand), hide: box(hide) };
+    });
+  const chatExpandedBefore = await chatState();
+  await page.locator('#chat-hide-button').click();
+  await page.waitForTimeout(120);
+  const chatHidden = await chatState();
+  await page.locator('#chat-expand-button').click();
+  await page.waitForTimeout(120);
+  const chatRestored = await chatState();
+  await page.locator('#chatroom-input').click();
+  const inputFocused = await page.evaluate(() => document.activeElement?.id === 'chatroom-input');
+  const placeholder = await page.evaluate(
+    () => document.querySelector('#chatroom-input')?.getAttribute('placeholder') ?? null,
+  );
+
+  if (!chatExpandedBefore.messages?.visible) reasons.push('初始状态下聊天消息容器不可见');
+  if (!chatHidden.messages || chatHidden.messages.visible) {
+    reasons.push(`隐藏聊天后消息容器仍可见：${JSON.stringify(chatHidden.messages)}`);
+  }
+  if (!chatHidden.expand?.visible) reasons.push('隐藏聊天后找不到可见的展开按钮 #chat-expand-button');
+  if (chatHidden.hide?.visible) reasons.push('隐藏聊天后隐藏按钮仍可见');
+  if (!chatRestored.messages?.visible) reasons.push('点展开按钮后聊天消息容器没有恢复可见');
+  if (!inputFocused) reasons.push('展开聊天后 #chatroom-input 无法聚焦');
+  if (!placeholder || !placeholder.includes('[enter]')) {
+    reasons.push(`聊天输入框 placeholder 变了：${JSON.stringify(placeholder)}`);
+  }
+
+  // ---------------------------------------------------------------- ② 无钳制平移（放最后：会把地图拖走）
+  // 拖三笔、每笔 (-900, -600)：合计向左 2700 px，地图（≤1125 px 边长）必然完全离开视口。
+  for (let i = 0; i < 3; i += 1) {
+    await page.mouse.move(1000, 700);
+    await page.mouse.down();
+    for (let s = 1; s <= 6; s += 1) {
+      await page.mouse.move(1000 - (900 * s) / 6, 700 - (600 * s) / 6);
+    }
+    await page.mouse.up();
+    await page.waitForTimeout(80);
+  }
+  const panned = await page.evaluate(() => {
+    const g = window.__generalsDebug;
+    const c = document.querySelector('canvas');
+    const ctx = c.getContext('2d');
+    const cssW = parseFloat(c.style.width || String(c.width)) || c.width;
+    const k = c.width / cssW; // 设备像素 / CSS 像素
+    const pts = [
+      [10, 10],
+      [400, 200],
+      [800, 450],
+      [1200, 700],
+      [1580, 880],
+      [200, 800],
+      [1500, 100],
+    ];
+    const sampled = pts.map(([x, y]) => {
+      const d = ctx.getImageData(Math.round(x * k), Math.round(y * k), 1, 1).data;
+      return `${d[0]},${d[1]},${d[2]}`;
+    });
+    const s = g ? g() : null;
+    return { origin: s ? s.origin : null, cell: s ? s.cell : null, sampled };
+  });
+
+  if (!panned.origin) reasons.push('平移后拿不到 __generalsDebug 快照');
+  else if (!(panned.origin.x < -800)) {
+    reasons.push(`地图没有真正移出视口（origin.x=${panned.origin.x}，应 < -800，说明仍被钳制）`);
+  }
+  if (!panned.sampled.every((p) => p === '20,20,20')) {
+    reasons.push(`地图移出视口后画布应只剩 #141414 深灰，实测采样 ${JSON.stringify(panned.sampled)}`);
+  }
+
+  await page.close();
+  return {
+    ok: reasons.length === 0,
+    reasons,
+    zoom,
+    fullscreen: { found: fsCount === 1, label: fsLabel, called: fsCalled },
+    leaderboard: { before: lbExpandedBefore, collapsed: lbCollapsed, restored: lbRestored },
+    chat: { before: chatExpandedBefore, hidden: chatHidden, restored: chatRestored, inputFocused },
+    pan: panned,
+  };
+}
+
 /** 用 page.mouse 把排行榜横向拖动 dx 像素（负数 = 向左）；返回前后矩形与 localStorage 值。 */
 async function dragLeaderboard(page, dx = -80) {
   const box = await page.locator('#game-leaderboard-container').boundingBox();
@@ -282,7 +521,7 @@ try {
       failures.push(`聊天栏首行提示缺失：${JSON.stringify(s.chatHint)}`);
     }
 
-    // 四个浮动面板：都在 DOM、都可见、矩形都在视口内。
+    // 五个浮动面板：都在 DOM、都可见、矩形都在视口内。
     for (const id of PANEL_IDS) {
       const p = s.panels[id];
       if (!p) {
@@ -346,6 +585,11 @@ try {
     const ratio = await checkRatio(context, base);
     console.log('ratio:', JSON.stringify(ratio));
     if (!ratio.ok) failures.push(...ratio.reasons);
+
+    // 交互五件套（R6.14）：缩放锚点 / 无钳制平移 / 全屏按钮 / 记分板折叠 / 聊天收起。
+    const ui = await checkViewportUi(context, base);
+    console.log('ui:', JSON.stringify(ui));
+    if (!ui.ok) failures.push(...ui.reasons);
   }
 
   await alice.screenshot({ path: outPng });
