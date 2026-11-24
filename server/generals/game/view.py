@@ -25,8 +25,9 @@ class TileView:
 
     - ``index``：地块 index（= 列表下标）。
     - ``army``：兵力；**视野外为 ``None``**（R3.6）。
-    - ``owner``：控制者；``None`` = 中立。视野外仍给出 owner（PROTOCOL 的 ``ownerId`` 语义，
-      便于客户端画"雾中的敌方领土"——R3.6 只说"不给兵量"，未说隐藏归属）。
+    - ``owner``：控制者；``None`` = 中立（或视野外，见 R3.6）。
+      **视野外一律为 ``None``**：控制者与兵力同属 R3.5 的"完整信息"，迷雾里一个都不给，
+      否则任何消费方（含策略 AI）都能凭配色反推敌方领土轮廓。
     - ``terrain``：可见地形编码：0 平原 / 1 首都 / 2 山地 / 3 城市 / 4 首都转化型城市。
     """
 
@@ -74,10 +75,12 @@ def project(state: GameState, seat_player: int | None) -> list[TileView]:
 
       * **观战者**（``None``）：全图真实信息——``army`` 真实，``terrain`` 为真实编码
         （0/1/2/3，首都转化型城市给 ``4``）（R3.10：观战者全图可见）。
-      * **视野内**（R3.5：己方地块 ∪ 其 8 相邻）：``army`` 真实；``terrain = 4``
-        当且仅当地块是首都转化型城市（R5.4），否则为真实地形编码。
-      * **视野外**（R6.9）：``army = None``；``terrain = 2`` 若真实地形为山地或普通城市，
-        否则 ``0``（PLAIN / CAPITAL / 首都转化型城市）。
+      * **视野内**（R3.5：己方地块 ∪ 其 8 相邻）：``army`` 与 ``owner`` 均为真实值；
+        ``terrain = 4`` 当且仅当地块是首都转化型城市（R5.4），否则为真实地形编码。
+      * **视野外**（R3.6 / R6.9）：``army = None`` **且** ``owner = None``；``terrain = 2``
+        若真实地形为山地或普通城市，否则 ``0``（PLAIN / CAPITAL / 首都转化型城市）。
+        注：迷雾里 ``owner = None`` **并不等于**该地块中立——它只表示"看不见归属"，
+        消费方不得据此断言中立。
       * 已出局玩家的 ``seat_player``：视野为空集，因此全部地块走"视野外"分支。
     抛出：无。
     """
@@ -109,7 +112,9 @@ def project(state: GameState, seat_player: int | None) -> list[TileView]:
                 TileView(
                     index=idx,
                     army=None,
-                    owner=tile.owner,
+                    # R3.6：迷雾不给归属。曾错误地把真实 owner 透出，导致策略可凭
+                    # "雾里的敌方领土色"定位对手首都与全部边界（信息作弊）。
+                    owner=None,
                     terrain=_fog_terrain(tile),
                 )
             )

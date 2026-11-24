@@ -72,8 +72,11 @@ class Greedy:
     2. 对每个 4 相邻格：
        - 目标可见（`army is not None`）且 `terrain != 2`（不是山地外观，R4.9）；
        - 目标非己方控制；
-    3. 打分：空地（`owner is None` 且 `army in (None, 0)`）优先；否则按目标兵力升序；
+    3. 打分：空地（`army == 0` 且 `owner is None`，**必须可见**）优先；否则按目标兵力升序；
     4. 返回一条 `move`（比例 1.0）。
+
+    注意 R3.6：视野外的 `owner` 同样是 `None`，因此判空地**必须**先确认 `army is not None`，
+    否则会把迷雾当成空地一头撞进去。
     """
 
     name = "greedy"
@@ -105,7 +108,8 @@ class Greedy:
                     # 视野外目标：本策略不去碰未知格（避免撞上城市/山地的额外消耗）。
                     # 注意 R6.9：`terrain==2` 已在上方排除，这里只剩「视野外平原外观」。
                     pass
-                is_empty = target.owner is None and (target.army or 0) == 0
+                # R3.6：空地必须"可见且无力"——视野外的 owner 也是 None，不能当空地。
+                is_empty = target.army is not None and target.owner is None and target.army == 0
                 # 排序键：(是否空地(0 优先), 目标兵力, 目标index, 方向序)
                 key = (
                     0 if is_empty else 1,

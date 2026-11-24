@@ -79,8 +79,12 @@ class MyBot:
 | --- | --- | --- |
 | `index` | `int` | `row * size + col` |
 | `army` | `int \| None` | 兵力；**`None` = 视野外**（R3.6）。不要在 `None` 上做算术 |
-| `owner` | `int \| None` | 控制者 `playerId`；`None` = 中立。视野外**仍给 owner**（能看见雾里的敌方领土色） |
+| `owner` | `int \| None` | 控制者 `playerId`；`None` = 中立**或视野外**（R3.6） |
 | `terrain` | `int` | 可见地形编码 |
+
+> **视野外 `owner` 也是 `None`**（R3.6）：迷雾里既没有兵量、也没有归属。
+> 所以"`owner is None`"**不能**当成"中立空地"来用——想知道一格是不是空地，
+> 必须它同时满足 `army is not None`（在视野内）且 `owner is None`。
 
 `terrain` 编码（PROTOCOL §3.3）：
 
@@ -444,7 +448,7 @@ register("remote")(lambda: RemoteAgent(url="http://127.0.0.1:9000/decide", name=
 | R3.2 | 开局每人 1 座首都、1 兵 | 前几刻几乎无事可做 |
 | R3.3 | 城市初始中立驻军 40–50 | 早期别拿 1 兵去撞城 |
 | R3.4 | `Turn N.` 结算增长：首都/城市 +1；平原每 25 回合 +1 | 攒兵靠城市，不是靠平原 |
-| R3.5 | 视野 = 己方全部地块 ⊕ 8 相邻 | 视野外 `army is None` |
+| R3.5 | 视野 = 己方全部地块 ⊕ 8 相邻 | 视野外 `army is None`、`owner is None` |
 | R3.8 | 中立地块有驻军、对所有人敌对，但不调兵不增长 | 打中立 = 互减，不是白拿 |
 | R4.2 | 实际调兵 = `min(ceil(army×ratio), army−1)` | **兵力 ≤ 1 调不动** |
 | R4.3 | 阵地战：各方求和互减，最大者胜，并列最大全部归零且不占领 | 别用均势硬撞 |
@@ -465,9 +469,11 @@ register("remote")(lambda: RemoteAgent(url="http://127.0.0.1:9000/decide", name=
 ## 10. 常见坑（按被坑概率排序）
 
 1. **视野外做算术**：`army is None` 上运算会 `TypeError`。先判 `None`。
-2. **以为 `terrain == 2` 一定是山**：视野外的**城市**也渲染成 `2`（R6.9）。
+2. **把 `owner is None` 当中立空地**：视野外的 `owner` 同样是 `None`（R3.6）。
+   判空地必须同时满足 `army is not None`（视野内）且 `owner is None`。
+3. **以为 `terrain == 2` 一定是山**：视野外的**城市**也渲染成 `2`（R6.9）。
    它可能不是山 —— 但也没法从观测区分，按"不能走"处理最安全。
-3. **兵力 1 还想调兵**：`min(ceil(1×1.0), 0) = 0` ⇒ 请求被作废（R4.2/R4.12），
+4. **兵力 1 还想调兵**：`min(ceil(1×1.0), 0) = 0` ⇒ 请求被作废（R4.2/R4.12），
    还可能连带作废它的下游。判 `army > 1` 再行动。
 4. **每刻返回多个动作**：`act()` 只能返回**一个** `Action`（或 `None`）。
    想排队就在一个 `act()` 里多次调用？不行 —— 返回值只有一个。

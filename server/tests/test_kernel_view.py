@@ -45,6 +45,41 @@ def test_out_of_vision_army_is_hidden_r3_6() -> None:
             assert view.army is None
 
 
+def test_out_of_vision_owner_is_hidden_r3_6() -> None:
+    """R3.6：视野外**连控制者都不给**（否则能凭雾里的敌方领土色反推对手轮廓）。
+
+    这是 2026-11-24 修掉的漏洞：`project` 曾把真实 `owner` 透出到迷雾里，
+    导致任何消费方（含策略 AI）都能定位对手首都与全部边界。
+    """
+    state = make_state(size=9, players=(0, 1))
+    enemy_cap = state.players[1].capital
+    assert enemy_cap is not None
+
+    views = {v.index: v for v in project(state, 0)}
+    visible = set(state.visible_tiles(0))
+    assert enemy_cap not in visible  # 9×9 的两个角，互相肯定看不见
+
+    for idx, view in views.items():
+        if idx not in visible:
+            assert view.owner is None, f"视野外第 {idx} 格泄露了 owner={view.owner}"
+
+    # 视野内照常给真实归属（自己首都）
+    assert views[state.players[0].capital].owner == 0
+
+
+def test_fog_owner_none_does_not_mean_neutral_r3_6() -> None:
+    """迷雾里的 `owner=None` 只表示"看不见"，不能当成中立来断言。"""
+    state = make_state(size=9, players=(0, 1))
+    enemy_cap = state.players[1].capital
+    assert enemy_cap is not None
+    # 真实状态里这一格归玩家 1
+    assert state.tiles[enemy_cap].owner == 1
+    # 但玩家 0 的视图里它是 None（雾），两者并不矛盾：None 只是"不可见"
+    assert project(state, 0)[enemy_cap].owner is None
+    # 观战者仍然看到真实归属（R3.10）
+    assert project(state, None)[enemy_cap].owner == 1
+
+
 def test_in_vision_army_is_real_r3_5() -> None:
     state = make_state(size=9, players=(0, 1))
     cap = state.players[0].capital
