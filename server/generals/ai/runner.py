@@ -14,6 +14,8 @@
   它在内部用 `asyncio.to_thread`；本模块也提供 `async def tick_async()` 供远程策略使用。
 - AI 看到的视野与人类完全一致（`ai.api.to_observation` 内部调 `game.view.project`）。
 - `Action` 一律经 `Room.handle()` 走与人类相同的校验路径，**没有作弊通道**（AI_API.md 开头）。
+- 本模块负责把策略的**调试日志**（`generals.ai.log`）、本刻动作、异常喂给房间的回放录制器
+  （`docs/REPLAY.md`）；未录制回放时这些调用都是空操作。
 """
 
 from __future__ import annotations
@@ -26,6 +28,7 @@ from typing import Any, Final
 from generals.game.state import GameState
 
 from . import api, builtin  # noqa: F401  - builtin 的 import 触发策略注册（register 装饰器）
+from . import debug as ai_debug
 from .api import Action, Agent, GameSpec, Observation, Row
 from .registry import get
 
@@ -120,10 +123,57 @@ class AIRunner:
         if state is None or self._started:
             return
         try:
-            self.agent.reset(spec_from_state(state, tick_ms=getattr(self.room, "tick_ms", 500)))
+            with ai_debug.capture(self._log_sink()):
+                self.agent.reset(
+                    spec_from_state(state, tick_ms=getattr(self.room, "tick_ms", 500))
+                )
         except Exception as exc:  # noqa: BLE001 - 策略实现方的 bug 不应拖垮对局
-            self.last_error = exc
+            self._record_error(exc)
         self._started = True
+
+    # ------------------------------------------------------------------
+    # 回放接线（docs/REPLAY.md §3）：日志 / 动作 / 异常都进本局回放
+    # ------------------------------------------------------------------
+    def _log_sink(self) -> Any:
+        """构造绑到本座位录制器的日志 sink（无录制器时返回 `None` = 静默丢弃）。
+
+        前置：无（`room` 可以是任意实现了 `record_ai_log` 的对象）。
+        后置：返回 `(level, text) -> None`；`tick` 由房间按录制时的 `state.tick` 填。
+        抛出：无。
+        """
+        record = getattr(self.room, "record_ai_log", None)
+        if not callable(record):
+            return None
+
+        def sink(level: str, text: str) -> None:
+            record(
+                self.player_id,
+                text,
+                level=level,
+                seat=self.seat_seq,
+                strategy=self.strategy_name,
+            )
+
+        return sink
+
+    def _record_error(self, error: Any) -> None:
+        """把异常记为 `last_error` 并写进回放（`kind="error"`）。前置/后置：无；抛出：无。"""
+        self.last_error = error if isinstance(error, BaseException) else Exception(str(error))
+        record = getattr(self.room, "record_ai_error", None)
+        if callable(record):
+            try:
+                record(self.player_id, error, seat=self.seat_seq, strategy=self.strategy_name)
+            except Exception:  # noqa: BLE001 - 回放故障不影响对局
+                pass
+
+    def _record_action(self, command: dict) -> None:
+        """把本刻动作（已量化为线协议指令）写进回放（`kind="action"`）。抛出：无。"""
+        record = getattr(self.room, "record_ai_action", None)
+        if callable(record):
+            try:
+                record(self.player_id, command, seat=self.seat_seq, strategy=self.strategy_name)
+            except Exception:  # noqa: BLE001
+                pass
 
     def observation(self) -> Observation | None:
         """构造当前观测（调用 `ai.api.to_observation`）。
@@ -159,17 +209,24 @@ class AIRunner:
             self.reset()
         try:
             obs = api.to_observation(state, self.player_id)
-            action = self.agent.act(obs)
+            with ai_debug.capture(self._log_sink()):
+                action = self.agent.act(obs)
         except Exception as exc:  # noqa: BLE001
-            self.last_error = exc
+            self._record_error(exc)
             return None
         if action is None:
             return None
         self.last_action = action
         try:
-            self.room.handle(seat, {"t": "commands", "cmds": [action.to_command()]})
+            command = action.to_command()
+        except Exception as exc:  # noqa: BLE001 - 策略给了非法 Action：本刻不操作
+            self._record_error(exc)
+            return None
+        self._record_action(command)
+        try:
+            self.room.handle(seat, {"t": "commands", "cmds": [command]})
         except Exception as exc:  # noqa: BLE001 - 房间/协议层拒绝：记录即可
-            self.last_error = exc
+            self._record_error(exc)
         return action
 
     async def step_async(self) -> Action | None:
@@ -178,6 +235,8 @@ class AIRunner:
         前置：同 `step()`。
         后置：同 `step()`；区别是 `agent.act()` 在线程里执行，且受 `ACT_TIMEOUT` 软超时保护
               （超时则本 Tick 不操作，**不取消**底层线程，避免阻塞 httpx 连接池）。
+              日志 sink 用 `ai.debug.capture()` 绑定在**当前上下文**：`asyncio.to_thread`
+              会复制 context，因此线程里的 `generals.ai.log()` 也能写进本局回放。
         抛出：无。
         """
         self.last_action = None
@@ -191,19 +250,26 @@ class AIRunner:
             self.reset()
         try:
             obs = api.to_observation(state, self.player_id)
-            action = await asyncio.wait_for(
-                asyncio.to_thread(self.agent.act, obs), timeout=ACT_TIMEOUT
-            )
+            with ai_debug.capture(self._log_sink()):
+                action = await asyncio.wait_for(
+                    asyncio.to_thread(self.agent.act, obs), timeout=ACT_TIMEOUT
+                )
         except (asyncio.TimeoutError, Exception) as exc:  # noqa: BLE001
-            self.last_error = exc
+            self._record_error(exc)
             return None
         if action is None:
             return None
         self.last_action = action
         try:
-            self.room.handle(seat, {"t": "commands", "cmds": [action.to_command()]})
+            command = action.to_command()
         except Exception as exc:  # noqa: BLE001
-            self.last_error = exc
+            self._record_error(exc)
+            return None
+        self._record_action(command)
+        try:
+            self.room.handle(seat, {"t": "commands", "cmds": [command]})
+        except Exception as exc:  # noqa: BLE001
+            self._record_error(exc)
         return action
 
     def close(self) -> None:

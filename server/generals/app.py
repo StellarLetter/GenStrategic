@@ -24,6 +24,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import DEFAULT_CONFIG, GameConfig
 from .ai.loader import StrategyLoader
 from .net.lobby import Lobby
+from .replay import ReplayStore
 from .transport import http_routes, ws_routes
 
 __all__ = ["app", "create_app"]
@@ -36,7 +37,9 @@ def create_app(config: GameConfig | None = None, web_dist: Path | None = None) -
 
     前置：无。
     后置：返回已装配好的应用；`app.state.lobby` 是唯一的 `Lobby` 实例，
-           `app.state.strategy_loader` 是唯一的 `ai.loader.StrategyLoader`（已扫描完策略目录）。
+           `app.state.strategy_loader` 是唯一的 `ai.loader.StrategyLoader`（已扫描完策略目录），
+           `app.state.replay_store` 是唯一的 `replay.ReplayStore`（**每一局自动录回放**，
+           目录见 `docs/REPLAY.md`；`GENERALS_REPLAY_DIR` 可覆盖）。
     抛出：无（静态目录缺失时只登记 API 与 WS 路由，便于纯后端测试）。
     """
     cfg = config or DEFAULT_CONFIG
@@ -44,12 +47,13 @@ def create_app(config: GameConfig | None = None, web_dist: Path | None = None) -
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        app.state.lobby = Lobby(cfg)
+        app.state.lobby = Lobby(cfg, replay_store=app.state.replay_store)
         # 策略目录在启动时自动挂载（AI_API.md §3）：`ai/` 下的每个文件都会进注册表。
         app.state.strategy_loader.scan()
         try:
             yield
         finally:
+            # 关闭房间会顺带把「还没结束」的那一局的回放按 aborted 落盘（docs/REPLAY.md §4）。
             for room in app.state.lobby.rooms():
                 room.close()
 
@@ -57,6 +61,8 @@ def create_app(config: GameConfig | None = None, web_dist: Path | None = None) -
     app.state.config = cfg
     app.state.web_dist = dist
     app.state.strategy_loader = StrategyLoader()
+    # 回放仓库：目录缺省 `<repo>/replays`，可用 `GENERALS_REPLAY_DIR` 覆盖。
+    app.state.replay_store = ReplayStore()
 
     app.include_router(http_routes.router)
     app.include_router(http_routes.root_router)
@@ -76,6 +82,13 @@ def create_app(config: GameConfig | None = None, web_dist: Path | None = None) -
         @app.get("/waiting.html", response_model=None)
         async def waiting() -> FileResponse:
             return FileResponse(dist / "waiting.html")
+
+        # 回放页（`docs/REPLAY.md` §5）：前端构建产物里存在才挂路由，避免 500。
+        if (dist / "replay.html").is_file():
+
+            @app.get("/replay.html", response_model=None)
+            async def replay_page() -> FileResponse:
+                return FileResponse(dist / "replay.html")
 
     return app
 

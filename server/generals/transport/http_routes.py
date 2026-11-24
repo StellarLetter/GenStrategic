@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..config import COLORS, DEFAULT_CONFIG
+from ..replay import ReplayError, ReplayNotFound, ReplayRunning
 
 __all__ = ["router"]
 
@@ -94,6 +95,84 @@ async def reload_strategies(request: Request) -> JSONResponse:
     抛出：无 —— 文件级错误收敛进响应体的 `errors`，不影响已在进行的对局。
     """
     return JSONResponse(_loader(request).scan().to_wire())
+
+
+# ---------------------------------------------------------------------------
+# 对局回放（docs/REPLAY.md）
+# ---------------------------------------------------------------------------
+
+
+def _replays(request: Request) -> Any:
+    """从应用状态取回放仓库（前置：`app.state.replay_store` 已装配）。"""
+    return request.app.state.replay_store
+
+
+@router.get("/replays")
+async def list_replays(request: Request, limit: int = 50) -> JSONResponse:
+    """回放列表（新的在前）。
+
+    前置：无。
+    后置：`{directory, enabled, keep, count, active, replays: [summary…]}`；
+           `active` 是**仍在进行**的对局 id（不可读，见 `GET /api/replays/{id}`）。
+    抛出：无。
+    """
+    store = _replays(request)
+    info = store.info()
+    return JSONResponse(
+        {
+            "directory": info["directory"],
+            "enabled": info["enabled"],
+            "keep": info["keep"],
+            "count": info["count"],
+            "active": info["active"],
+            "replays": store.list(limit=limit),
+        }
+    )
+
+
+@router.get("/replays/{replay_id}")
+async def get_replay(request: Request, replay_id: str) -> JSONResponse:
+    """取一份完整回放（`frames` + `ai` 调试流，结构见 `docs/REPLAY.md` §2）。
+
+    前置：`replay_id` 来自列表。
+    后置：HTTP 200 + 完整回放 JSON。
+    抛出（转成 HTTP 状态）：409 `replay_running`（**对局仍在进行，不许读**）；
+          404 `replay_not_found`；500 `replay_error`（文件损坏/读失败）。
+    """
+    store = _replays(request)
+    try:
+        payload = store.load(replay_id)
+    except ReplayRunning:
+        return JSONResponse(
+            {"error": "replay_running", "detail": "replay of a running match is not readable"},
+            status_code=409,
+        )
+    except ReplayNotFound:
+        return JSONResponse(
+            {"error": "replay_not_found", "detail": f"no replay: {replay_id}"},
+            status_code=404,
+        )
+    except ReplayError as exc:
+        return JSONResponse({"error": "replay_error", "detail": str(exc)}, status_code=500)
+    return JSONResponse(payload)
+
+
+@router.delete("/replays/{replay_id}")
+async def delete_replay(request: Request, replay_id: str) -> JSONResponse:
+    """删除一份回放（清理磁盘用）。
+
+    前置：无。
+    后置：`{ok: true, deleted: bool}`（不存在时 `deleted=false`）。
+    抛出（转成 HTTP 状态）：409 `replay_running`；500 `replay_error`。
+    """
+    store = _replays(request)
+    try:
+        deleted = store.delete(replay_id)
+    except ReplayRunning:
+        return JSONResponse({"error": "replay_running"}, status_code=409)
+    except ReplayError as exc:
+        return JSONResponse({"error": "replay_error", "detail": str(exc)}, status_code=500)
+    return JSONResponse({"ok": True, "deleted": bool(deleted)})
 
 
 # 存活探针同时挂在根路径 `/healthz`（部署平台与反代通常按这个约定探测）。

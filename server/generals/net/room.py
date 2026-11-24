@@ -8,6 +8,9 @@
   `commands.enqueue_move / clear_chain / pop_chain`、`tick.step`、`view.project`。
 - **视野裁剪一律调 `game.view.project`**（R3.5 / R3.6 / R6.9），本模块不重复实现裁剪逻辑。
 - 本模块只做「座位 → 玩家」的映射、指令校验 + `ack`/`reject`，以及把内核报告转成每个座位各自的帧。
+- **回放录制**（`docs/REPLAY.md`）：本模块只把「已经编码好的广播帧 / 地块增量 / 策略调试条目」
+  交给注入的 `ReplayStore` 所建的录制器，**不实现回放格式**。录制在内存里进行，
+  对局结束（或房间关闭）时整份落盘 —— 因此**对局中磁盘上没有这一局的回放**。
 
 并发模型
 --------
@@ -213,6 +216,8 @@ class Room:
     - `room_id` 必须唯一（由 `net.lobby.Lobby` 保证）。
     - `size` **仅测试用**：显式传入时覆盖地图边长（让测试地图小、跑得快）。
       生产路径不传，边长按 R2.3 由玩家数与地图种子在 `start()` 时算出。
+    - `replay_store`：回放仓库（`generals.replay.ReplayStore`）。非空时本房间**自动录制**
+      整局回放，结束时落盘（`docs/REPLAY.md`）。`None` = 不录制（测试/离线基准的缺省）。
     后置：
     - `state is None` 表示等待阶段；`start()` 之后 `state` 为内核 `GameState`。
     - `seats` 按加入顺序保存；遍历时用 `_seats_sorted()` 保证 `(seat 序号)` 确定性（R7.3）。
@@ -226,6 +231,7 @@ class Room:
         *,
         seed: int | None = None,
         size: int | None = None,
+        replay_store: Any | None = None,
     ) -> None:
         self.id: str = room_id
         self.config: GameConfig = config or DEFAULT_CONFIG
@@ -251,6 +257,14 @@ class Room:
         self._runners: dict[int, Any] = {}
         #: 策略实例化失败的原因（座位 seq → 文本），供 `/api/ai/state` 与测试排错。
         self._strategy_errors: dict[int, str] = {}
+        #: 回放仓库（`generals.replay.ReplayStore`）；`None` = 本房间不录制回放。
+        self._replay_store: Any | None = replay_store
+        #: 本局的录制器（开局时创建，结束/关闭时落盘并置 `None`）。见 docs/REPLAY.md。
+        self._replay: Any | None = None
+        #: 落盘失败的原因（回放是旁路：失败只记在这里，绝不影响对局）。
+        self._replay_error: str | None = None
+        #: 本局地图种子（`start()` 时定下；回放元数据用它 + 玩家数即可复现地图）。
+        self._seed: int | None = None
 
     # ------------------------------------------------------------------
     # 构造期查询
@@ -467,6 +481,7 @@ class Room:
             raise protocol.ProtocolError("not_started", "no players in room")
 
         seed = self._seed_override if self._seed_override is not None else _seed_from_room_id(self.id)
+        self._seed = int(seed)
         rng = random.Random(seed)
         # 内核 `mapgen.generate` 支持 1..8 任意玩家数（含奇数）：奇数多出的一座放在中心 3×3。
         # 座位数的上限由 `max_players` 与内核 `MAX_PLAYERS` 保证，这里直接传真实人数。
@@ -493,6 +508,10 @@ class Room:
         self.state = state
         self.phase = RoomState.RUNNING
 
+        # 回放录制器必须在**任何策略 `reset()` 之前**建好：策略在 reset 里写的调试日志
+        # 也要进回放（`docs/AI_API.md` §11）。建录制器不推进任何状态。
+        self._begin_replay(state, seed=int(seed))
+
         # 策略接管必须在**广播开局帧之前**建好：机器人/AI 托管座位的行为与真人一样，
         # 从 Turn 0 的第一刻就该开始决策（R1.2 / R4.7）。建 runner 不推进任何状态。
         self._sync_runners()
@@ -501,6 +520,8 @@ class Room:
         self.broadcast(frame)
         for seat in self._seats_sorted():
             self._send_view(seat, state, force_full=True)
+        # 开局全量地块（观战者视角）进回放：`tiles` 帧是按座位下发的，录制需要单独补一份。
+        self._record_tiles(state, full=True)
         self.broadcast(self._leaderboard_frame(state))
         self.broadcast(self._turn_frame(state))
 
@@ -758,6 +779,7 @@ class Room:
                 # `clear`/`pop`/`select` 是无副作用的本地意图，**静默接受**（不回 ack，见下）；
                 # `move` 无处可入队 → `not_started`。
                 if op not in ("clear", "pop", "select"):
+                    self._record_reject(pid, op, idx, "not_started")
                     self._send(seat, protocol.encode_reject(op, idx, "not_started"))
                 continue
             if pid is None:
@@ -767,8 +789,11 @@ class Room:
             try:
                 self._apply_command(state, pid, cmd)
             except game_commands.CommandError as exc:
-                self._send(seat, protocol.encode_reject(op, idx, getattr(exc, "code", "bad_frame")))
+                code = getattr(exc, "code", "bad_frame")
+                self._record_reject(pid, op, idx, code)
+                self._send(seat, protocol.encode_reject(op, idx, code))
             except KeyError:  # pragma: no cover - 防御：内核异常结构
+                self._record_reject(pid, op, idx, "bad_frame")
                 self._send(seat, protocol.encode_reject(op, idx, "bad_frame"))
             # 指令被接受时**不发 ack**（lead 裁决 2026-11-18）：前端没有等 ack 的逻辑，
             # 每 Tick 逐条回 ack 只会污染帧流。接受与否由随后的权威 `commands` 回显体现。
@@ -942,6 +967,8 @@ class Room:
         for seat in self._seats_sorted():
             self._send_view(seat, state)
 
+        self._record_tiles(state)
+
         self.broadcast(self._leaderboard_frame(state))
 
         # R4.12：作废的调兵请求只通知本人（event + 紧随的 commands 快照），不广播。
@@ -969,6 +996,8 @@ class Room:
                     protocol.encode_event("game_over", turn, who=winner_name, target=None)
                 )
             self.phase = RoomState.ENDED
+            # 回放必须等**本刻所有帧（含终局事件与战报）都广播完**再落盘。
+            self._finish_replay("ended")
 
     def _broadcast_report_events(self, report: Any, turn: int) -> None:
         """把 `TickReport` 里的 capture / elimination 转成 `event` + 系统聊天（PROTOCOL.md §3.7）。
@@ -1048,6 +1077,170 @@ class Room:
                 continue
             name, color = ident_of(pid)
             self._announce_left(("p", int(pid)), name, color, turn)
+
+    # ------------------------------------------------------------------
+    # 回放录制（docs/REPLAY.md）
+    # ------------------------------------------------------------------
+    @property
+    def replay(self) -> Any | None:
+        """本局的录制器（对局进行中非空；结束/未录制为 `None`）。排错与测试用。"""
+        return self._replay
+
+    @property
+    def replay_error(self) -> str | None:
+        """上次回放落盘失败的原因（成功时为 `None`）。"""
+        return self._replay_error
+
+    def _begin_replay(self, state: GameState, *, seed: int) -> None:
+        """开局时创建录制器并绑定状态（内部）。
+
+        前置：`state` 已生成；`self._replay_store` 可能为 `None`（不录制）。
+        后置：`self._replay` 非空时，之后所有 `broadcast()` 帧、观战者地块增量、
+              策略调试条目都会被录进内存缓冲；对局结束/关闭时整份落盘。
+        抛出：无 —— 任何失败都只记进 `_replay_error`（回放绝不阻断开局）。
+        """
+        if self._replay_store is None:
+            return
+        players: list[dict] = []
+        for pid in sorted(state.players):
+            pstate = state.players[pid]
+            seat = self._seat_of(pid)
+            players.append(
+                {
+                    "playerId": int(pid),
+                    "seat": None if seat is None else int(seat.seq),
+                    "name": pstate.name,
+                    "color": pstate.color,
+                    "bot": None if seat is None else seat.bot,
+                    "autopilot": None if seat is None else seat.autopilot,
+                }
+            )
+        try:
+            recorder = self._replay_store.begin(
+                room_id=self.id,
+                seed=int(seed),
+                size=int(state.size),
+                tick_ms=self.tick_ms,
+                players=players,
+            )
+        except Exception as exc:  # noqa: BLE001 - 回放是旁路
+            self._replay_error = f"{type(exc).__name__}: {exc}"
+            return
+        if recorder is None:
+            return
+        recorder.attach(state)
+        self._replay = recorder
+
+    def _record_frame(self, frame: dict, *, size_hint: int | None = None) -> None:
+        """把一条广播帧录进回放（内部；`broadcast()` 已序列化好，顺手把长度当字节估算）。"""
+        recorder = self._replay
+        if recorder is None:
+            return
+        recorder.record_frame(frame, size_hint=size_hint)
+
+    def _record_tiles(self, state: GameState, *, full: bool = False) -> None:
+        """录制观战者视角的地块增量（内部；`tiles` 帧是按座位下发的，故单独录）。"""
+        recorder = self._replay
+        if recorder is None:
+            return
+        recorder.record_tiles(state, full=full)
+
+    def record_ai_log(
+        self,
+        player_id: int,
+        text: Any,
+        *,
+        level: str = "debug",
+        seat: int | None = None,
+        strategy: str | None = None,
+    ) -> None:
+        """记录一条**策略自定义日志**（策略侧入口是 `generals.ai.log`，AI_API.md §11）。
+
+        前置：`player_id` 是局中玩家 id（`None` 会被忽略）。
+        后置：回放里多一条 `{"kind":"log",...}`；未录制时什么都不做。
+        抛出：无 —— 回放坏了不能影响策略运行。
+        """
+        recorder = self._replay
+        if recorder is None or player_id is None:
+            return
+        recorder.record_ai_log(
+            int(player_id), text=text, level=level, seat=seat, strategy=strategy
+        )
+
+    def record_ai_action(
+        self,
+        player_id: int,
+        action: dict,
+        *,
+        seat: int | None = None,
+        strategy: str | None = None,
+    ) -> None:
+        """记录策略本刻返回的动作（线协议指令 dict，已量化比例）。前置/后置/抛出同上。"""
+        recorder = self._replay
+        if recorder is None or player_id is None:
+            return
+        recorder.record_ai_action(int(player_id), action=action, seat=seat, strategy=strategy)
+
+    def record_ai_error(
+        self,
+        player_id: int,
+        error: Any,
+        *,
+        seat: int | None = None,
+        strategy: str | None = None,
+    ) -> None:
+        """记录策略抛出的异常（被视为「本刻不操作」，但必须留在回放里供复盘）。"""
+        recorder = self._replay
+        if recorder is None or player_id is None:
+            return
+        recorder.record_ai_error(int(player_id), error=error, seat=seat, strategy=strategy)
+
+    def _record_reject(self, player_id: int | None, op: str, seq: int, code: str) -> None:
+        """记录一次被拒绝的指令（内部；PROTOCOL §5 错误码）。"""
+        recorder = self._replay
+        if recorder is None or player_id is None:
+            return
+        recorder.record_reject(int(player_id), op=op, seq=int(seq), code=code)
+
+    def _record_drop(
+        self,
+        player_id: int,
+        *,
+        src: int,
+        direction: str,
+        ratio: float,
+        reason: str,
+        cascade: int = 0,
+    ) -> None:
+        """记录一条被作废的调兵请求（内部；R4.12 `chain_dropped`）。"""
+        recorder = self._replay
+        if recorder is None:
+            return
+        recorder.record_drop(
+            int(player_id),
+            src=int(src),
+            direction=direction,
+            ratio=float(ratio),
+            reason=str(reason),
+            cascade=int(cascade),
+        )
+
+    def _finish_replay(self, reason: str) -> None:
+        """把本局回放落盘并清空录制器（内部，幂等）。
+
+        前置：无。
+        后置：`self._replay` 置空；成功则回放出现在目录里，失败只记 `_replay_error`。
+              `reason` ∈ `{"ended", "aborted"}`：前者 = 分出胜负/自然结束，后者 = 房间被关闭。
+        抛出：无。
+        """
+        recorder = self._replay
+        self._replay = None
+        if recorder is None or self._replay_store is None:
+            return
+        try:
+            self._replay_store.save(recorder, reason=reason)
+        except Exception as exc:  # noqa: BLE001
+            self._replay_error = f"{type(exc).__name__}: {exc}"
 
     # ------------------------------------------------------------------
     # 帧构造 / 发送
@@ -1176,6 +1369,15 @@ class Room:
         )
         for item in ordered:
             pid = int(getattr(item, "player_id", -1))
+            # 作废是**只发给本人**的帧，回放要单独记一条（调试「我的调兵为什么没发生」）。
+            self._record_drop(
+                pid,
+                src=int(getattr(item, "src", 0)),
+                direction=_dir_name(getattr(item, "dir", "")),
+                ratio=float(getattr(item, "ratio", 1.0)),
+                reason=str(getattr(item, "reason", "src_lost")),
+                cascade=int(getattr(item, "cascade", 0)),
+            )
             seat = self._seat_of(pid)
             if seat is None or seat.closed:
                 continue
@@ -1265,6 +1467,10 @@ class Room:
         抛出：`TypeError` / `ValueError` —— `json.dumps` 失败（内部错误）。
         """
         text = json.dumps(frame, separators=(",", ":"), ensure_ascii=False)
+        # 回放录的是「广播帧」= 房间级事实（开局/回合/排行榜/事件/聊天/终局）。
+        # 逐座位帧（视野增量、调兵链回显、reject）不在这里，前者由 `_record_tiles`
+        # 以观战者视角单独录，后者由 `_handle_commands` 记成 AI 调试条目。
+        self._record_frame(frame, size_hint=len(text))
         slow: list[Seat] = []
         for seat in self._seats_sorted():
             if seat.closed:
@@ -1290,9 +1496,12 @@ class Room:
 
         前置：无。
         后置：`_closed = True`；已运行的任务被 `cancel()`（调用方负责 await）；所有座位置 `closed`；
-              所有策略实例被 `close()` 释放（远程策略释放连接池）。
+              所有策略实例被 `close()` 释放（远程策略释放连接池）；
+              本局回放若还没落盘，按 `reason="aborted"` 保存（对局被中途掐断也要留档）。
         抛出：无。
         """
+        # 先落回放：此时 `state` 与缓冲都还在，落盘内容完整（终止原因标记为 aborted）。
+        self._finish_replay("aborted")
         self._closed = True
         task = self._loop_task
         if task is not None and not task.done():

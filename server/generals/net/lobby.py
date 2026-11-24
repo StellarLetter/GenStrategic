@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import itertools
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 from generals.config import DEFAULT_CONFIG, GameConfig
 
@@ -66,7 +66,9 @@ class RoomSummary:
 class Lobby:
     """房间表 + 座位分配（INTERFACES §2.1）。
 
-    前置（构造）：`config` 提供 `max_players`/`default_size` 等常量，缺省用 `DEFAULT_CONFIG`。
+    前置（构造）：`config` 提供 `max_players`/`default_size` 等常量，缺省用 `DEFAULT_CONFIG`；
+    `replay_store` 是回放仓库（`generals.replay.ReplayStore`，可省略），会注入本大厅创建的
+    每一个 `Room` —— 于是**每局自动录制回放**（`docs/REPLAY.md`）。
     后置：空表，公共房计数器从 0 开始。
     抛出：无。
 
@@ -74,8 +76,9 @@ class Lobby:
     （`net.session` / `transport` 均在 loop 内调用），因此不需要加锁。
     """
 
-    def __init__(self, config: GameConfig | None = None) -> None:
+    def __init__(self, config: GameConfig | None = None, *, replay_store: Any | None = None) -> None:
         self.config: GameConfig = config or DEFAULT_CONFIG
+        self.replay_store: Any | None = replay_store
         self._rooms: dict[str, Room] = {}
         self._counter = itertools.count(1)
 
@@ -219,11 +222,12 @@ class Lobby:
         """新建并登记房间（内部）。
 
         前置：`room_id` 不在表中。
-        后置：`Room` 已登记，`state is None`（等待阶段）。
+        后置：`Room` 已登记，`state is None`（等待阶段）；该房间继承了本大厅的
+              `replay_store`（非空则整局自动录制回放）。
         抛出：`ValueError` —— 房间 id 重复（编程错误）。
         """
         if room_id in self._rooms:
             raise ValueError(f"room already exists: {room_id}")
-        room = Room(room_id, self.config)
+        room = Room(room_id, self.config, replay_store=self.replay_store)
         self._rooms[room_id] = room
         return room

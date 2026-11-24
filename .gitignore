@@ -20,3 +20,6 @@ build/
 # 个人策略不入库：ai/ 只发布示例策略
 ai/*.py
 !ai/sample_greedy.py
+
+# 对局回放是运行期数据（每局自动落盘一份，见 docs/REPLAY.md）
+replays/

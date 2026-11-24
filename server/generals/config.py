@@ -104,6 +104,20 @@ ROOM_MAX_CONNECTIONS: int = 32
 #: 公共房自动回收阈值（Tick）。
 ROOM_IDLE_END_TICKS: int = 600
 
+# ---------------------------------------------------------------------------
+# 对局回放（server/generals/replay；见 docs/REPLAY.md）
+# ---------------------------------------------------------------------------
+
+#: 单份回放允许占用的字节上限（估算值）。超出即停止录帧并标记 `truncated`。
+#: 8 人 40×40 的马拉松对局也远小于此值；这是防止病态长局把磁盘写爆的保险丝。
+REPLAY_MAX_BYTES: int = 32 * 1024 * 1024
+#: 回放目录里保留的文件数上限（按保存时间，最旧的先删）。
+REPLAY_KEEP: int = 200
+#: 单局回放允许记录的 AI 调试条目上限（日志 + 动作 + 异常 + 拒绝）。
+REPLAY_AI_LOG_MAX: int = 20000
+#: 单条 AI 调试文本的最大字符数（超出截断，避免策略一口气打印几 MB）。
+REPLAY_AI_LOG_MAX_LEN: int = 500
+
 #: 玩家颜色，顺序与参考截图排行榜一致（PROTOCOL §1 / net.protocol.COLORS）。
 COLORS: tuple[str, ...] = (
     "red",
@@ -187,5 +201,9 @@ __all__ = [
     "RATIO_STEP",
     "ROOM_MAX_CONNECTIONS",
     "ROOM_IDLE_END_TICKS",
+    "REPLAY_MAX_BYTES",
+    "REPLAY_KEEP",
+    "REPLAY_AI_LOG_MAX",
+    "REPLAY_AI_LOG_MAX_LEN",
     "COLORS",
 ]

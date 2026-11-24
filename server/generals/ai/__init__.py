@@ -9,13 +9,15 @@
 - `register` / `get` / `all_names`：策略注册表
 - `AIRunner` / `make_agent`：把策略挂到房间座位上
 - `RemoteAgent`：进程外（HTTP）策略客户端
+- `log`：**策略调试日志**（写进本局回放，`docs/AI_API.md` §11）
+- `debug`：日志模块本体（`ai.debug.capture` 供离线工具接管日志）
 - `StrategyLoader` / `ai_dir`：策略目录**自动挂载**（默认 `<repo>/ai`，AI_API.md §3）
 - `builtin`：内置策略模块（import 即完成 `hold` / `greedy` / `random` 的注册）
 """
 
 from __future__ import annotations
 
-from . import builtin, registry
+from . import builtin, debug, registry
 from .api import (
     RATIOS,
     Action,
@@ -27,6 +29,7 @@ from .api import (
     to_observation_for,
 )
 from .builtin import BUILTIN_NAMES, Greedy, Hold, Random, neighbours4
+from .debug import log
 from .loader import DEFAULT_AI_DIR, LoadReport, StrategyInfo, StrategyLoader, ai_dir
 from .registry import all_names, get, register, registered
 from .remote_client import RemoteAgent
@@ -52,7 +55,9 @@ __all__ = [
     "ai_dir",
     "all_names",
     "builtin",
+    "debug",
     "get",
+    "log",
     "make_agent",
     "neighbours4",
     "register",
