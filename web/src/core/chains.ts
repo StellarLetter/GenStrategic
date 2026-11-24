@@ -9,6 +9,7 @@
  *
  * 规则：
  *   R6.6 选中新地块 → 比例 100%；再次点击当前选中地块 → 50%；`+`/`-` 步长 10%（10%..100%）。
+ *        比例**不自动保持**：每提交一次调兵（键盘 pushMove / 点击 pushClickMove）后立即回 100%。
  *   R6.3 调兵链 FIFO；服务端 `commands` 帧回显会覆盖本地镜像。
  */
 
@@ -53,7 +54,8 @@ export interface PushResult {
 /**
  * 从当前选中地块朝 dir 入队一条调兵请求；成功后选中移到目标地块（R6.2）。
  * 前置：selected 非空；目标在界内且不是山地外观（R4.9，客户端只做粗筛，权威在服务端）。
- * 后置：chain 追加；超过 CHAIN_LIMIT 时 error='chain_full' 且不追加。
+ * 后置：chain 追加；比例复位为 100%（R6.6：比例不自动保持）；
+ *       超过 CHAIN_LIMIT 时 error='chain_full' 且不追加。
  */
 export function pushMove(
   ch: ChainState,
@@ -68,13 +70,14 @@ export function pushMove(
   if (ch.chain.length >= CHAIN_LIMIT) return { chain: ch, cmd: null, error: 'chain_full' };
   const cmd: MoveRequest = { from: ch.selected, dir, ratio: ch.ratio };
   return {
-    chain: { ...ch, selected: target, chain: [...ch.chain, cmd] },
+    // 入队的请求各自记下当时的比例（R6.7）；随后选中下一条起点，比例回 100%（R6.6）。
+    chain: { ...ch, selected: target, ratio: RATIO_MAX, chain: [...ch.chain, cmd] },
     cmd,
     error: null,
   };
 }
 
-/** R6.5：点击已选中地块的 4 相邻地块 → 一次调兵，并选中该相邻地块。 */
+/** R6.5：点击已选中地块的 4 相邻地块 → 一次调兵，并选中该相邻地块（比例复位见 pushMove）。 */
 export function pushClickMove(ch: ChainState, target: number, size: number): PushResult {
   if (ch.selected === null) return { chain: ch, cmd: null, error: 'no_selection' };
   const dir = dirBetween(ch.selected, target, size);

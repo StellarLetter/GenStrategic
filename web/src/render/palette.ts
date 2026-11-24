@@ -40,8 +40,10 @@ export const PLAYER_COLOR_ORDER: ColorName[] = [
 ];
 
 export const BG = {
-  /** 页面底色（地图区域之外）。 */
+  /** 页面底色（CSS `--bg-page`，用于面板等 UI）。 */
   page: '#222222',
+  /** 非地图区：地图之外、画布上没有被地图覆盖的部分（对齐 CSS `--bg-void`）。 */
+  void: '#141414',
   /** 地图底色 = 视野外地块填充（两者同色，迷雾因此是连续一片）。 */
   fog: '#393939',
 };

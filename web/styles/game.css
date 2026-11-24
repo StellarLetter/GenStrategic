@@ -1,71 +1,65 @@
 /*
  * game.css — 游戏页布局与面板样式。
  *
- * 视觉基准：SaveWeb/屏幕截图 2026-11-18 190745.png（全屏 2559×1351）
- *   地图区占左 ~75%，右侧 25% 为排行榜 + 聊天；
- *   Turn 计数器在左上角；Surrender 按钮顶部居中；聊天输入框在右下角。
+ * 视觉基准：SaveWeb/屏幕截图 2026-11-18 190745.png（原站：地图占左 ~75%，右侧 25% 面板）。
+ * 本项目改为 **全屏地图 + 四个浮动面板**：
+ *   - canvas 铺满整个视口；地图之外的部分用 --bg-void（比 --bg-page 更深的灰）；
+ *   - 回合计数器在左上、Surrender 在顶部居中、排行榜在右上（约 300px）、聊天在右下（约 340px）；
+ *   - 每个面板都可拖动（pointer 拖动阈值见 src/ui/floating.ts），位置记在 localStorage。
  */
 
 #react-container,
 #game-page {
-  position: relative;
-  width: 100vw;
-  height: 100vh;
-  overflow: hidden;
-  display: flex;
-}
-
-.canvas-host {
-  position: relative;
-  flex: 1 1 auto;
-  min-width: 0;
-  height: 100%;
-}
-
-.game-canvas-wrap {
-  position: absolute;
+  position: fixed;
   inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  overflow: hidden;
+  background: var(--bg-void);
 }
 
 .game-map-canvas {
+  position: absolute;
+  inset: 0;
   display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--bg-void);
   cursor: pointer;
   image-rendering: auto;
 }
 
-.panel-host {
-  position: relative;
-  flex: 0 0 25%;
-  min-width: 240px;
-  max-width: 420px;
-  height: 100%;
-  background: var(--bg-page);
+/* ---------------------------------------------------------- 浮动面板公共 */
+
+#turn-counter,
+#surrender-button,
+#game-leaderboard-container,
+#in-game-chat {
+  position: fixed;
+  z-index: 10;
 }
 
 /* ---------------------------------------------------------- 回合计数器 */
 
 #turn-counter {
-  position: absolute;
-  top: 0;
-  left: 0;
+  top: 12px;
+  left: 12px;
   padding: 6px 10px;
   font-size: 20px;
   font-weight: 700;
+  line-height: 1.1;
   color: #ffffff;
-  background: var(--bg-page);
-  z-index: 20;
-  pointer-events: none;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 3px;
+  z-index: 30;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
 }
 
 /* ---------------------------------------------------------- Start / Surrender */
 
 #start-button,
 #surrender-button {
-  position: absolute;
-  top: 0;
+  position: fixed;
   padding: 10px 26px;
   font-size: 17px;
   font-weight: 700;
@@ -74,17 +68,22 @@
   border: none;
   border-radius: 0;
   cursor: pointer;
-  z-index: 20;
+  z-index: 30;
 }
 
 #start-button {
+  top: 12px;
   left: 50%;
   transform: translateX(-140%);
 }
 
 #surrender-button {
+  top: 12px;
   left: 50%;
   transform: translateX(-50%);
+  cursor: move;
+  touch-action: none;
+  user-select: none;
 }
 
 #start-button[hidden],
@@ -101,11 +100,13 @@
 /* ---------------------------------------------------------- 排行榜 */
 
 #game-leaderboard-container {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 100%;
-  z-index: 10;
+  top: 12px;
+  right: 12px;
+  width: 300px;
+  z-index: 20;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
 }
 
 #game-leaderboard {
@@ -209,15 +210,34 @@
 /* ---------------------------------------------------------- 聊天 */
 
 #in-game-chat {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: 40%;
+  right: 12px;
+  bottom: 12px;
+  width: 340px;
+  height: 38vh;
   display: flex;
   flex-direction: column;
   background: var(--chat-bg);
-  z-index: 10;
+  z-index: 20;
+  /* 面板压在迷雾上：一圈极淡的边，保证边界一眼可辨。 */
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+/* 顶部窄拖动条：聊天内容的滚动与输入框都不受影响。 */
+.chat-drag-handle {
+  flex: 0 0 auto;
+  height: 18px;
+  background-color: rgba(255, 255, 255, 0.08);
+  background-image: radial-gradient(rgba(255, 255, 255, 0.3) 1px, transparent 1px);
+  background-size: 8px 8px;
+  background-position: center center;
+  background-repeat: repeat-x;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+
+.chat-drag-handle:hover {
+  background-color: rgba(255, 255, 255, 0.16);
 }
 
 .chat-messages-container {
@@ -275,6 +295,11 @@
 
 #chatroom-input::placeholder {
   color: #777777;
+}
+
+/* 浮动面板拖动中：整块不参与文本选择（src/ui/floating.ts 加 .is-dragging）。 */
+.is-dragging {
+  user-select: none;
 }
 
 /* 调兵作废（R4.12 chain_dropped）不弹提示：直接按权威快照静默清空调兵链与其渲染。 */

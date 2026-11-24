@@ -19,6 +19,7 @@ const RECORDING_HINT = 'Chat is being recorded.';
 
 export class Chat {
   private readonly root: HTMLDivElement;
+  private readonly handle: HTMLDivElement;
   private readonly messages: HTMLDivElement;
   private readonly input: HTMLInputElement;
   private rendered = 0;
@@ -30,6 +31,10 @@ export class Chat {
   constructor(root: HTMLElement) {
     this.root = document.createElement('div');
     this.root.id = 'in-game-chat';
+
+    // 顶部窄拖动条：面板整体作为浮动层时用它作 handle，不占消息滚动与输入框的交互。
+    this.handle = document.createElement('div');
+    this.handle.className = 'chat-drag-handle';
 
     this.messages = document.createElement('div');
     this.messages.className = 'chat-messages-container';
@@ -43,7 +48,7 @@ export class Chat {
     this.input.placeholder = PLACEHOLDER;
     wrapper.appendChild(this.input);
 
-    this.root.append(this.messages, wrapper);
+    this.root.append(this.handle, this.messages, wrapper);
     root.appendChild(this.root);
 
     this.input.addEventListener('keydown', (ev) => {
@@ -59,6 +64,16 @@ export class Chat {
         ev.stopPropagation();
       }
     });
+  }
+
+  /** 根元素（装配点据此把它做成浮动层）。 */
+  get element(): HTMLDivElement {
+    return this.root;
+  }
+
+  /** 拖动握把：面板顶部的窄条。 */
+  get dragHandle(): HTMLDivElement {
+    return this.handle;
   }
 
   /** 键盘输入进入聊天框。 */

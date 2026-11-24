@@ -9,6 +9,7 @@
  *   ?name=<nick>    昵称
  *   ?spectate=1     观战
  *   ?demo=1         本地演示模式（无服务端，用于视觉比对）
+ *   ?demoRatio=0.5  （仅 demo）演示用调兵比例，用于截「选中格比例文字」（R6.6）
  */
 
 import { GameClient, defaultWsUrl } from './core/client';
@@ -30,34 +31,32 @@ import { bindPointer } from './input/pointer';
 import { cellSize, centerOnTile, hitTest, makeCamera, panPixels, panTiles, tileRect, zoomStep, type Camera } from './render/camera';
 import { paint } from './render/painter';
 import { Chat } from './ui/chat';
+import { makeDraggable } from './ui/floating';
 import { Leaderboard } from './ui/leaderboard';
 import { TurnCounter } from './ui/turn';
 
 const params = new URLSearchParams(location.search);
 const DEMO = params.get('demo') === '1';
 
+/** 把 URL 里的 demoRatio 解析为 0.1..1 的比例；缺省 1（不显示比例文字）。 */
+function clampRatio(raw: string | null): number {
+  if (raw === null || raw === '') return 1;
+  const v = Number(raw);
+  if (!Number.isFinite(v)) return 1;
+  return Math.min(1, Math.max(0.1, Math.round(v * 100) / 100));
+}
+
+const DEMO_RATIO = clampRatio(params.get('demoRatio'));
+
 const root = document.getElementById('react-container') ?? document.body;
 const page = document.createElement('div');
 page.id = 'game-page';
 page.className = 'page-enter-done';
 
-const canvasWrap = document.createElement('div');
-canvasWrap.className = 'game-canvas-wrap';
+// 全屏地图：canvas 铺满整个视口，面板全部改为压在上面的浮动层（见 styles/game.css）。
 const canvas = document.createElement('canvas');
 canvas.className = 'game-map-canvas';
-canvasWrap.appendChild(canvas);
-
-const sidePanel = document.createElement('div');
-sidePanel.id = 'side-panel';
-
-const canvasHost = document.createElement('div');
-canvasHost.className = 'canvas-host';
-canvasHost.appendChild(canvasWrap);
-
-const panelHost = document.createElement('div');
-panelHost.className = 'panel-host';
-
-page.append(canvasHost, panelHost);
+page.appendChild(canvas);
 root.appendChild(page);
 
 const startButton = document.createElement('button');
@@ -71,12 +70,17 @@ surrenderButton.id = 'surrender-button';
 surrenderButton.textContent = 'Surrender';
 page.appendChild(surrenderButton);
 
-/** 服务端 `chain_dropped`（R4.12）只用于静默作废：链由随后的权威 `commands` 快照清空。 */
-void sidePanel;
-
 const turnCounter = new TurnCounter(page);
-const leaderboard = new Leaderboard(panelHost);
-const chat = new Chat(panelHost);
+const leaderboard = new Leaderboard(page);
+const chat = new Chat(page);
+
+// 四个浮动面板：可拖动，位置存 localStorage['generals.panel.<id>']（见 ui/floating.ts）。
+// 面板是独立 DOM 层，panel 上的 pointer 事件不会落到 canvas 上，点击面板不会选中地块。
+// Surrender 整块可拖：拖动阈值内的 pointerup 仍按点击处理，点它照常投降。
+makeDraggable(turnCounter.element);
+makeDraggable(surrenderButton);
+makeDraggable(leaderboard.element);
+makeDraggable(chat.element, { handle: chat.dragHandle });
 
 // ------------------------------------------------------------ 状态
 
@@ -100,10 +104,10 @@ const ctx = canvas.getContext('2d');
 if (!ctx) throw new Error('canvas 2d context unavailable');
 
 function resize(): void {
-  const rect = canvasWrap.getBoundingClientRect();
+  // 地图铺满整个视口（不再是「右侧 25% 面板」的布局），cellSize 的公式不变（R2.3）。
   const dpr = Math.min(window.devicePixelRatio || 1, 2);
-  const w = Math.max(64, Math.floor(rect.width));
-  const h = Math.max(64, Math.floor(rect.height));
+  const w = Math.max(64, Math.floor(window.innerWidth));
+  const h = Math.max(64, Math.floor(window.innerHeight));
   canvas.width = Math.floor(w * dpr);
   canvas.height = Math.floor(h * dpr);
   canvas.style.width = `${w}px`;
@@ -436,7 +440,13 @@ function loadDemo(): void {
   };
   cam = makeCamera(size, cam.width, cam.height, cam.dpr);
   const capA = 3 * size + 3;
-  chain = { ...chain, selected: capA, ratio: 1, chain: [{ from: capA, dir: 'right', ratio: 1 }] };
+  // ?demoRatio=<0.1..1> 时把比例设成非 100%，用来截「选中格比例文字」（R6.6）。
+  chain = {
+    ...chain,
+    selected: capA,
+    ratio: DEMO_RATIO,
+    chain: [{ from: capA, dir: 'right', ratio: DEMO_RATIO }],
+  };
   draw();
 }
 
@@ -451,3 +461,38 @@ export function debugSnapshot(): {
 } {
   return { state, cam, rect: (i: number) => tileRect(cam, i), cell: cellSize(cam) };
 }
+
+/**
+ * 调试钩子：把几何事实挂到 `window.__generalsDebug`，供 `scripts/e2e-page.mjs`
+ * 与截图脚本读取（纯读取，不改变任何游戏状态）。
+ *
+ * 有了它，自动化就不必从像素反推格边长 —— 视野可能只有两三格，按「网格线间距」
+ * 反推会得出荒谬的数字（例如把两块相距很远的可见区当成相邻格子）。
+ */
+declare global {
+  interface Window {
+    __generalsDebug?: () => {
+      size: number;
+      cell: number;
+      zoom: number;
+      width: number;
+      height: number;
+      ratio: number;
+      selected: number | null;
+      chain: number;
+      rect: (i: number) => { x: number; y: number; w: number; fill: number; gap: number };
+    };
+  }
+}
+
+window.__generalsDebug = () => ({
+  size: state.size,
+  cell: cellSize(cam),
+  zoom: cam.zoom,
+  width: cam.width,
+  height: cam.height,
+  ratio: chain.ratio,
+  selected: chain.selected,
+  chain: chain.chain.length,
+  rect: (i: number) => tileRect(cam, i),
+});

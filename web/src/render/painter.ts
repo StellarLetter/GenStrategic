@@ -5,16 +5,17 @@
  * 视觉基准：SaveWeb/屏幕截图 2026-11-18 190403.png（全局）/ 192622.png（放大）。
  *
  * 绘制顺序（对齐原站）：
- *   ① 地图底色 → ② 逐格填充（视野内先铺满网格线色再内缩填充；视野外整格填雾色，
+ *   ① 画布底（地图之外 = 更深的 --bg-void）+ 地图区底色（迷雾色）
+ *   → ② 逐格填充（视野内先铺满网格线色再内缩填充；视野外整格填雾色，
  *      使迷雾连成一片、不出现网格线）→ ③ 地形/控制图标 → ④ 兵量数字（覆盖在图标之上）
- *   → ⑤ 调兵链箭头 → ⑥ 选中描边
+ *   → ⑤ 调兵链箭头 → ⑥ 选中描边 → ⑦ 选中格的比例文字（R6.6）
  */
 
 import type { ChainState } from '../core/chains';
 import { playerOf, type ClientState, type Tile } from '../core/state';
 import { DIRS, dirBetween, toRC } from '../core/geometry';
 import type { ColorName, TerrainCode } from '../core/types';
-import { cellSize, tileRect, visibleRange, type Camera } from './camera';
+import { cellSize, mapOrigin, mapPixels, tileRect, visibleRange, type Camera, type TileRect } from './camera';
 import { drawCastle, drawCrown, drawMountain } from './icons';
 import { BG, PLAYER_COLORS, TILE, tileFill } from './palette';
 
@@ -38,9 +39,15 @@ export function paint(
   ctx.save();
   ctx.setTransform(cam.dpr, 0, 0, cam.dpr, 0, 0);
 
-  // ① 地图底色（与原站一致：地图区域底色 = 迷雾色）
-  ctx.fillStyle = BG.fog;
+  // ① 画布底 = 地图之外的非地图区（更深的 --bg-void）；
+  //    地图范围内铺迷雾色（与原站一致：地图区域底色 = 迷雾色），
+  //    这样缩放后地图边缘不会露出画布底色、迷雾仍是连续一片（R6.9）。
+  ctx.fillStyle = BG.void;
   ctx.fillRect(0, 0, cam.width, cam.height);
+  const origin = mapOrigin(cam);
+  const mapPx = mapPixels(cam);
+  ctx.fillStyle = BG.fog;
+  ctx.fillRect(origin.x, origin.y, mapPx, mapPx);
 
   const { row0, row1, col0, col1 } = visibleRange(cam);
   const cell = cellSize(cam);
@@ -96,8 +103,39 @@ export function paint(
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = Math.max(2, Math.round(cell * 0.055));
     ctx.strokeRect(r.x + r.gap / 2, r.y + r.gap / 2, r.fill, r.fill);
+    // ⑦ 比例文字（R6.6）：只在比例 < 100% 时显示，不加遮罩、不挡住中央的兵量数字。
+    if (chain.ratio < 1) drawRatio(ctx, chain.ratio, r, cell);
   }
 
+  ctx.restore();
+}
+
+/**
+ * 选中格的比例文字（R6.6）：`NN%`，字号约格子的 20%，放在格子**底部居中**。
+ * 半透明白 + 深色柔化阴影：既压得住玩家色底，也不至于盖住中央的兵量数字。
+ * 比例 100% 是默认态，不画（保持原站观的干净观感）。
+ */
+function drawRatio(
+  ctx: CanvasRenderingContext2D,
+  ratio: number,
+  r: TileRect,
+  cellPx: number,
+): void {
+  const text = `${Math.round(ratio * 100)}%`;
+  const size = Math.max(8, cellPx * 0.21);
+  const inset = r.gap / 2;
+  ctx.save();
+  ctx.font = `700 ${size}px ${NUMBER_FONT}`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'bottom';
+  ctx.shadowColor = 'rgba(0,0,0,0.9)';
+  ctx.shadowBlur = Math.max(2, size * 0.4);
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  ctx.fillText(
+    text,
+    r.x + inset + r.fill / 2,
+    r.y + inset + r.fill - Math.max(1, cellPx * 0.03),
+  );
   ctx.restore();
 }
 

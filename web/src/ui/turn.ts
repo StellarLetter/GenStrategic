@@ -17,6 +17,11 @@ export class TurnCounter {
     root.appendChild(this.el);
   }
 
+  /** 根元素（装配点据此把它做成浮动层）。 */
+  get element(): HTMLDivElement {
+    return this.el;
+  }
+
   render(state: ClientState): void {
     const text = formatTurn(state.turn, state.half);
     if (text === this.last) return;

@@ -31,6 +31,7 @@
   --color-orange: #fa8c01;
 
   /* 地图 / 界面底色 */
+  --bg-void: #141414; /* 非地图区（地图之外）：比 --bg-page 更深的灰 */
   --bg-page: #222222;
   --bg-fog: #393939;
   --tile-neutral-plain: #dcdcdc;
@@ -54,6 +55,7 @@ body {
   padding: 0;
   height: 100%;
   overflow: hidden;
+  /* 页面底色仍取 --bg-page；只有对局页（#game-page）额外铺 --bg-void 的非地图区深灰。 */
   background: var(--bg-page);
   color: #ffffff;
   font-family: var(--font-ui-regular);

@@ -26,6 +26,11 @@ export class Leaderboard {
     root.appendChild(this.root);
   }
 
+  /** 根元素（装配点据此把它做成浮动层）。 */
+  get element(): HTMLDivElement {
+    return this.root;
+  }
+
   render(state: ClientState): void {
     const rows = state.leaderboard.length > 0 ? state.leaderboard : fallbackRows(state);
     const fp = fingerprint(rows);
