@@ -1,4 +1,4 @@
-"""回放命令行工具：列出 / 查看 / 翻查策略调试日志（docs/REPLAY.md §5.2）。
+"""回放命令行工具：列出 / 查看 / 翻查策略调试日志 / 造样本（docs/REPLAY.md §5.2）。
 
 用法（仓库根，用仓库的 venv 解释器）::
 
@@ -7,13 +7,15 @@
     .venv\\Scripts\\python.exe tools\\replay.py show <id>
     .venv\\Scripts\\python.exe tools\\replay.py show <id> --ai
     .venv\\Scripts\\python.exe tools\\replay.py show <id> --ai --player 0 --kinds log,error --limit 200
-    .venv\\Scripts\\python.exe tools\\replay.py tail <id> --tick 200 60   # 只看 200 之后的 60 刻
+    .venv\\Scripts\\python.exe tools\\replay.py demo --dir .dispatch\\replays     # 造一份样本回放
 
 设计要点
 --------
-* 只读：本工具不写回放、不改目录（除了没有索引时由 `ReplayStore` 自己重建一次）。
+* `list` / `show` 只读：不写回放、不改目录（除了没有索引时由 `ReplayStore` 自己重建一次）。
 * 目录解析与服务端一致（`GENERALS_REPLAY_DIR` > `<repo>/replays`），可用 `--dir` 覆盖。
 * 「对局中不可读取」同样生效：正在录制的回放 `show` 会明确报错（R8.2）。
+* `demo` 起一局**离线**机器人对局（同一套内核 + 同一套录制器），产出一份带
+  策略日志 / 动作 / 被拒 / 作废条目的样本，供回放页与 e2e 做视觉与功能验收。
 """
 
 from __future__ import annotations
@@ -159,12 +161,93 @@ def cmd_show(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_demo(args: argparse.Namespace) -> int:
+    """造一份样本回放：离线跑一局「会写日志的演示策略 vs greedy」，含被拒与作废条目。
+
+    前置：`args.dir` 是目标目录（不存在会创建）。
+    后置：落一份回放（自然终局，附策略日志/动作/异常/被拒/作废），打印其 id。
+          供回放页视觉验收与 `web/scripts/e2e-replay.mjs` 使用（docs/REPLAY.md §5.5）。
+    抛出：`ReplayError` —— 目录不可写。
+    """
+    from generals.ai import register
+    from generals.ai.api import Action, neighbours4
+    from generals.ai.debug import log
+    from generals.config import DEFAULT_CONFIG
+    from generals.net.room import Room
+
+    @register("replay-demo")
+    class _DemoStrategy:
+        """演示策略：每刻写日志；按贪心派兵；在指定回合故意派非法指令（留 reject 痕迹）。"""
+
+        name = "replay-demo"
+        label = "演示策略（写日志）"
+        description = "回放样本用：每刻写日志、贪心扩张、故意触发一次拒绝与一次作废"
+
+        def reset(self, spec) -> None:
+            self.turn_seen = -1
+            self.size = spec.size
+            log(f"reset: size={spec.size} players={spec.player_count}", level="info")
+
+        def act(self, obs):
+            if obs.turn != self.turn_seen:
+                self.turn_seen = obs.turn
+                log(f"turn {obs.turn}: army={obs.my_army} land={obs.my_land} chain={len(obs.chain)}")
+            if obs.turn == 20:
+                log("故意派一条越界调兵：应当被服务端拒绝（reject 留痕）", level="warn")
+                return Action(op="move", src=0, dir="up", ratio=1.0)
+            if obs.turn == 40:
+                log("故意从一块不归自己的地块派兵：入队合法，结算时作废（drop 留痕）", level="warn")
+                for tile in obs.tiles:
+                    if tile.owner == obs.me or tile.terrain == 2:
+                        continue
+                    if neighbours4(tile.index, obs.size).get("up") is None:
+                        continue
+                    return Action(op="move", src=tile.index, dir="up", ratio=1.0)
+            if obs.turn and obs.turn % 50 == 0 and obs.half == 0:
+                log("阶段小结：继续扩张，留意对方向我方王城汇聚", level="info")
+            for tile in obs.tiles:
+                if tile.owner != obs.me or not tile.army or tile.army <= 1:
+                    continue
+                for direction, nb in neighbours4(tile.index, obs.size).items():
+                    target = obs.tiles[nb]
+                    if target.owner == obs.me or target.terrain == 2:
+                        continue
+                    return Action(op="move", src=tile.index, dir=direction, ratio=1.0)
+            return None
+
+    store = ReplayStore(args.dir, keep=10**6) if args.dir else ReplayStore(keep=10**6)
+    room = Room(f"replay-demo-{args.turns}", DEFAULT_CONFIG, seed=args.seed, replay_store=store)
+    room.add(None, "DemoStrategy", bot="replay-demo")
+    rival = room.add(None, "Greedy", bot="greedy")
+    room.start()
+    for _ in range(args.turns * 2):
+        if room.state.ended:
+            break
+        room.step_once()
+        if room.state.tick == max(2, args.turns - 20):
+            # 收尾：让对手投降 → 40 Tick 过渡期后自然终局（顺带产生 surrendered 播报）。
+            room.handle(rival, {"t": "surrender"})
+    room.close()
+    rows = store.list(limit=1)
+    if not rows:
+        print("生成失败：没有落盘任何回放", file=sys.stderr)
+        return 1
+    row = rows[0]
+    print(
+        f"demo replay: {row['id']}\n"
+        f"  目录 {store.directory}\n"
+        f"  回合 {row['turns']}  帧 {row['frameCount']}  AI 条目 {row['aiCount']}  "
+        f"{'自然终局' if row['ended'] else '未终局'}  胜者 {row['winnerName']}"
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="对局回放工具（docs/REPLAY.md）")
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--dir", default="", help="回放目录（缺省 GENERALS_REPLAY_DIR 或 <repo>/replays）"
     )
+    ap = argparse.ArgumentParser(description="对局回放工具（docs/REPLAY.md）")
     ap.add_argument("--dir", default="", help=argparse.SUPPRESS)
     sub = ap.add_subparsers(dest="command", required=True)
 
@@ -182,20 +265,27 @@ def main(argv: list[str] | None = None) -> int:
     p_show.add_argument("--limit", type=int, default=500)
     p_show.add_argument("--json", action="store_true", help="直接输出整份回放 JSON")
 
+    p_demo = sub.add_parser("demo", parents=[common], help="造一份样本回放（含策略日志/拒绝/作废）")
+    p_demo.add_argument("--turns", type=int, default=220, help="打到第几回合（默认 220）")
+    p_demo.add_argument("--seed", type=int, default=424242, help="地图种子（默认 424242，可复现）")
+
     args = ap.parse_args(argv)
     directory = args.dir or None
     try:
         if args.command == "list":
             return cmd_list(_with_dir(args, directory))
+        if args.command == "demo":
+            return cmd_demo(_with_dir(args, directory))
         return cmd_show(_with_dir(args, directory))
     except ReplayRunning:
         print("该回放属于一局**仍在进行**的对局：对局结束前不可读取（R8.2）。", file=sys.stderr)
         return 2
     except ReplayNotFound:
-        print(f"找不到回放: {args.id}（目录 {directory or ReplayStore().directory}）", file=sys.stderr)
+        print(f"找不到回放: {getattr(args, 'id', '?')}（目录 {directory or ReplayStore().directory}）",
+              file=sys.stderr)
         return 3
     except ReplayError as exc:
-        print(f"读取失败: {exc}", file=sys.stderr)
+        print(f"回放处理失败: {exc}", file=sys.stderr)
         return 1
 
 

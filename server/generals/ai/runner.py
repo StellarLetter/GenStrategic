@@ -188,6 +188,25 @@ class AIRunner:
         return api.to_observation(state, self.player_id)
 
     # ------------------------------------------------------------------
+    def _can_operate(self, state: GameState) -> bool:
+        """该座位此刻是否允许产生指令（出局 / 投降过渡期都不允许，R5.5）。
+
+        前置：`state` 非空。
+        后置：返回 `True` 表示可以决策；玩家不在局中时返回 `False`（防御）。
+        抛出：无。
+
+        为什么要挡：投降过渡期（40 Tick）与出局后，策略若继续返回动作，服务端只会逐条
+        `reject(not_your_turn)` —— 既浪费 CPU，也会把回放的 AI 调试流刷满噪声。
+        """
+        players = getattr(state, "players", None)
+        if not isinstance(players, dict):
+            return True
+        pstate = players.get(self.player_id)
+        if pstate is None:
+            return False
+        can = getattr(pstate, "can_operate", None)
+        return bool(can()) if callable(can) else bool(getattr(pstate, "alive", True))
+
     def step(self) -> Action | None:
         """同步推进一次决策（进程内策略）。
 
@@ -204,6 +223,8 @@ class AIRunner:
             return None
         seat = self.seat
         if seat is None:
+            return None
+        if not self._can_operate(state):
             return None
         if not self._started:
             self.reset()
@@ -245,6 +266,8 @@ class AIRunner:
             return None
         seat = self.seat
         if seat is None:
+            return None
+        if not self._can_operate(state):
             return None
         if not self._started:
             self.reset()
