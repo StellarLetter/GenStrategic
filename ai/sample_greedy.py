@@ -41,7 +41,8 @@ class SampleGreedy:
                 # R4.9：不可向山地调兵，否则服务端回 blocked。
                 if target.terrain == MOUNTAIN:
                     continue
-                empty = target.owner is None and (target.army or 0) == 0
+                # R3.6：视野外 owner 也是 None，判空地必须先确认"看得见"。
+                empty = target.army is not None and target.owner is None and target.army == 0
                 key = (0 if empty else 1, int(target.army or 0), nb)
                 if best is None or key < best[0]:
                     best = (key, direction, tile.index)
