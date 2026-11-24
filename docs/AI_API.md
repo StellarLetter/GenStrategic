@@ -221,6 +221,10 @@ $env:GENERALS_AI_DIR = "D:\my-strategies"
 
 > **重载不影响进行中的对局**：已建好的策略实例继续跑；新开局或切换策略才用新代码。
 
+> **`GET /api/ai/strategies` 不会重扫**：它只把 loader **上一次** `scan()` 的报告原样返回
+> （启动时那次，或上一次 `POST /api/ai/reload` 那次）。所以「刷新了却没看到新策略」几乎都是
+> 把 `GET` 当成了刷新 —— 必须走 `POST /api/ai/reload`。界面上的「刷新策略」按钮走的就是这个 `POST`。
+
 ### 3.4 加载失败怎么办
 
 一个坏文件**只影响它自己**：报错进 `errors`，服务器照常启动、其它策略照常可用。
@@ -494,7 +498,8 @@ register("remote")(lambda: RemoteAgent(url="http://127.0.0.1:9000/decide", name=
 
 | 症状 | 先查哪里 |
 | --- | --- |
-| 下拉框里没有我的策略 | `GET /api/ai/strategies` 的 `errors`；文件名是否 `_` 开头；`@register` 名字是否为空 |
+| 下拉框里没有我的策略 | 真的重扫过吗（`POST /api/ai/reload`，`GET` 只回旧报告）；`errors` 里有没有它；文件名是否 `_` 开头；`@register` 名字是否为空 |
+| 全部策略都 `ImportError` | 服务进程**启动时间**早于 `api.py` 的改动：模块已在内存里固化，重载策略文件也救不回来，只能重启服务 |
 | 选了策略但一动不动 | 策略是否返回 `None`；`room.strategy_state()` 的 `error` / `lastError` |
 | 动作被服务端拒绝 | 房间对局里看是否收到 `reject`（开局离线循环最能暴露问题，§6.2） |
 | 改完不生效 | 有没有 reload（§3.3）；是否改了 `ai/` 之外的副本 |

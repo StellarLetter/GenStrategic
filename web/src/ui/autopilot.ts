@@ -3,6 +3,8 @@
  *
  * 职责：只做 DOM 与网络交互，不含任何游戏规则：
  *   - 启动时 `GET /api/ai/strategies` 拉取可用策略（服务端已自动挂载 `ai/` 目录）；
+ *   - 点「刷新策略」发 `POST /api/ai/reload` 让服务端**重新扫描** `ai/` 目录（`GET`
+ *     只返回启动时那份清单，新增文件必须靠这次重扫才会出现，见 AI_API.md §3）；
  *   - 玩家在**开局前**（或对局中）从下拉框选一个策略 → 发 `autopilot` 帧让该策略接管
  *     自己的座位；选「我自己操作」→ 发 `{strategy: null}` 收回操作权。
  *   - 下拉框只列出**策略名**，显示名用 `label`（缺省等于 name）。
@@ -66,7 +68,7 @@ export class AutopilotPanel {
     this.reloadButton.type = 'button';
     this.reloadButton.id = 'autopilot-reload';
     this.reloadButton.textContent = '刷新策略';
-    this.reloadButton.title = '重新扫描服务端的 ai/ 目录（改完策略文件后可点）';
+    this.reloadButton.title = '重新扫描服务端的 ai/ 目录（新增/改完策略文件后点一下）';
     this.reloadButton.addEventListener('pointerdown', (ev) => ev.stopPropagation());
     this.reloadButton.addEventListener('click', (ev) => {
       ev.stopPropagation();
@@ -79,7 +81,7 @@ export class AutopilotPanel {
     this.root.append(title, this.select, this.reloadButton, this.status);
     root.appendChild(this.root);
     this.renderOptions();
-    void this.reload();
+    void this.fetchList();
   }
 
   /** 根元素（装配点据此把它做成浮动层）。 */
@@ -98,26 +100,46 @@ export class AutopilotPanel {
     this.syncStatus();
   }
 
-  /** 拉取/重载策略清单。 */
+  /** 启动时的清单拉取：`GET /api/ai/strategies` 只读服务端**已扫描**的结果，不重扫。 */
+  async fetchList(): Promise<void> {
+    await this.request('GET', '/api/ai/strategies');
+  }
+
+  /**
+   * 「刷新策略」：`POST /api/ai/reload` 让服务端重新扫描 `ai/` 目录后返回新清单。
+   *
+   * 为什么不能只用 `GET`：`GET` 返回的是 loader 上一次 `scan()` 的报告（启动时那份），
+   * 后加进 `ai/` 的文件不会凭空出现在里面 —— 这正是「刷新了却看不到新策略」的原因。
+   */
   async reload(): Promise<void> {
+    await this.request('POST', '/api/ai/reload');
+  }
+
+  /** 发一次请求并把响应装进面板（`method` 决定是否触发服务端重扫）。 */
+  private async request(method: 'GET' | 'POST', url: string): Promise<void> {
     this.reloadButton.disabled = true;
     try {
-      const res = await fetch('/api/ai/strategies', { method: 'GET' });
+      const res = await fetch(url, { method });
       if (!res.ok) throw new Error(String(res.status));
       this.apply((await res.json()) as StrategiesResponse);
     } catch {
-      this.loadError = '无法读取策略清单（服务端未响应）';
+      this.loadError = method === 'POST'
+        ? '重新扫描失败（服务端未响应）'
+        : '无法读取策略清单（服务端未响应）';
       this.syncStatus();
     } finally {
       this.reloadButton.disabled = false;
     }
   }
 
-  /** 把 `GET /api/ai/strategies` 的响应装进面板（也供 `POST /api/ai/reload` 复用）。 */
+  /** 把 `GET /api/ai/strategies` 的响应装进面板（`GET` 与 `POST /api/ai/reload` 同构，共用）。 */
   apply(data: StrategiesResponse): void {
     this.strategies = Array.isArray(data.strategies) ? data.strategies : [];
     const errors = Array.isArray(data.errors) ? data.errors : [];
-    this.loadError = errors.length > 0 ? `${errors.length} 个策略文件加载失败` : null;
+    // 报错要能直接看到是哪个文件，否则「新策略不出现」时用户无从下手（完整原因在 title）。
+    this.loadError = errors.length > 0
+      ? `${errors.length} 个策略文件加载失败：${errors.map((e) => e.file).join('、')}`
+      : null;
     this.loaded = true;
     if (errors.length > 0) {
       this.status.title = errors.map((e) => `${e.file}: ${e.error}`).join('\n');
@@ -172,13 +194,15 @@ export class AutopilotPanel {
 
   /** 更新状态行（只在文案变化时写 DOM，避免每 Tick 触碰布局）。 */
   private syncStatus(): void {
+    // 带上「共 N 个策略」，让「刷新策略」的结果（数量变化）一眼可见。
+    const total = `共 ${this.strategies.length} 个策略`;
     let text: string;
     if (!this.loaded) text = '正在读取策略…';
     else if (this.loadError) text = this.loadError;
     else if (this.current) {
       const row = this.strategies.find((s) => s.name === this.current);
-      text = `当前：${row?.label || this.current}`;
-    } else text = '当前：你自己操作';
+      text = `当前：${row?.label || this.current} · ${total}`;
+    } else text = `当前：你自己操作 · ${total}`;
 
     if (text === this.lastStatusText) return;
     this.lastStatusText = text;
