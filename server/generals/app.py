@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from .config import DEFAULT_CONFIG, GameConfig
+from .ai.loader import StrategyLoader
 from .net.lobby import Lobby
 from .transport import http_routes, ws_routes
 
@@ -30,13 +31,12 @@ __all__ = ["app", "create_app"]
 #: 前端构建产物的默认位置（`web/dist`）。可用环境变量 `GENERALS_WEB_DIST` 覆盖。
 _DEFAULT_WEB_DIST = Path(__file__).resolve().parents[2] / "web" / "dist"
 
-
 def create_app(config: GameConfig | None = None, web_dist: Path | None = None) -> FastAPI:
     """构造 FastAPI 应用。
 
     前置：无。
-    后置：返回已装配好的应用；`app.state.lobby` 是唯一的 `Lobby` 实例。
-          若 `web_dist` 存在，则 `/` 与 `/waiting.html` 直接返回构建产物。
+    后置：返回已装配好的应用；`app.state.lobby` 是唯一的 `Lobby` 实例，
+           `app.state.strategy_loader` 是唯一的 `ai.loader.StrategyLoader`（已扫描完策略目录）。
     抛出：无（静态目录缺失时只登记 API 与 WS 路由，便于纯后端测试）。
     """
     cfg = config or DEFAULT_CONFIG
@@ -45,6 +45,8 @@ def create_app(config: GameConfig | None = None, web_dist: Path | None = None) -
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.lobby = Lobby(cfg)
+        # 策略目录在启动时自动挂载（AI_API.md §3）：`ai/` 下的每个文件都会进注册表。
+        app.state.strategy_loader.scan()
         try:
             yield
         finally:
@@ -54,6 +56,7 @@ def create_app(config: GameConfig | None = None, web_dist: Path | None = None) -
     app = FastAPI(title="generals", version="1.0.0", lifespan=lifespan)
     app.state.config = cfg
     app.state.web_dist = dist
+    app.state.strategy_loader = StrategyLoader()
 
     app.include_router(http_routes.router)
     app.include_router(http_routes.root_router)

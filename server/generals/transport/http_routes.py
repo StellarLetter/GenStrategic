@@ -63,6 +63,39 @@ async def healthz() -> JSONResponse:
     return JSONResponse({"ok": True})
 
 
+# ---------------------------------------------------------------------------
+# 策略（AI_API.md §3 自动挂载）
+# ---------------------------------------------------------------------------
+
+
+def _loader(request: Request) -> Any:
+    """从应用状态取 `StrategyLoader`（前置：`app.state.strategy_loader` 已装配）。"""
+    return request.app.state.strategy_loader
+
+
+@router.get("/ai/strategies")
+async def list_strategies(request: Request) -> JSONResponse:
+    """可用策略清单（Web 界面的策略下拉框数据源）。
+
+    前置：无。
+    后置：`{directory, strategies: [{name, label, description, source, builtin}], errors, files}`；
+           `strategies` 按 `name` 升序（含内置 `hold`/`greedy`/`random`）。
+    抛出：无。
+    """
+    return JSONResponse(_loader(request).report.to_wire())
+
+
+@router.post("/ai/reload")
+async def reload_strategies(request: Request) -> JSONResponse:
+    """重新扫描策略目录（改完 `ai/*.py` 后无须重启服务）。
+
+    前置：无。
+    后置：返回与 `GET /api/ai/strategies` 同构的响应体，内容为**本次**扫描结果。
+    抛出：无 —— 文件级错误收敛进响应体的 `errors`，不影响已在进行的对局。
+    """
+    return JSONResponse(_loader(request).scan().to_wire())
+
+
 # 存活探针同时挂在根路径 `/healthz`（部署平台与反代通常按这个约定探测）。
 root_router = APIRouter(tags=["ops"])
 

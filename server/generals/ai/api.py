@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol, runtime_checkable
+from typing import Any, Final, Literal, Protocol, runtime_checkable
 
 from generals.game.commands import RATIOS, CommandError, quantize_ratio
 from generals.game.state import GameState, turn_of
@@ -18,10 +18,13 @@ from generals.game.view import TileView, project
 __all__ = [
     "Action",
     "Agent",
+    "DIR_DELTAS",
     "GameSpec",
     "Observation",
     "RATIOS",
     "Row",
+    "TERRAIN_MOUNTAIN_VISIBLE",
+    "neighbours4",
     "to_observation",
     "to_observation_for",
 ]
@@ -31,6 +34,34 @@ Op = Literal["move", "clear", "pop", "select"]
 
 #: 调兵方向字面量（与 `docs/PROTOCOL.md` §2.4 一致）。
 Dirs = Literal["up", "down", "left", "right"]
+
+#: 方向 → `(drow, dcol)`。顺序固定为 `up, down, left, right`（与 `game.state.neighbours4` 一致）。
+DIR_DELTAS: Final[dict[str, tuple[int, int]]] = {
+    "up": (-1, 0),
+    "down": (1, 0),
+    "left": (0, -1),
+    "right": (0, 1),
+}
+
+#: 渲染折叠后的山地地形值（PROTOCOL.md §3.3 / R6.9）。AI 侧只能看到它。
+TERRAIN_MOUNTAIN_VISIBLE: Final[int] = 2
+
+
+def neighbours4(index: int, size: int) -> dict[str, int]:
+    """返回 4 相邻地块（AI_API.md §2 示例里的同名工具）。
+
+    前置：`0 <= index < size*size`。
+    后置：返回 `{dir: neighbour_index}`，仅包含**未越界**的方向；键顺序固定 `up/down/left/right`。
+    抛出：无（越界输入返回空 dict）。
+    """
+    row, col = divmod(int(index), int(size))
+    out: dict[str, int] = {}
+    for direction in ("up", "down", "left", "right"):
+        dr, dc = DIR_DELTAS[direction]
+        r, c = row + dr, col + dc
+        if 0 <= r < size and 0 <= c < size:
+            out[direction] = r * size + c
+    return out
 
 
 @dataclass(frozen=True)

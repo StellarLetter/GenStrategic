@@ -20,12 +20,21 @@ from __future__ import annotations
 
 import math
 import random
-from typing import Any, Final
+from typing import Final
 
-from .api import RATIOS, Action, GameSpec, Observation
+from .api import (
+    DIR_DELTAS,
+    RATIOS,
+    TERRAIN_MOUNTAIN_VISIBLE,
+    Action,
+    GameSpec,
+    Observation,
+    neighbours4,
+)
 from .registry import register
 
 __all__ = [
+    "BUILTIN_NAMES",
     "DIR_DELTAS",
     "Greedy",
     "Hold",
@@ -33,33 +42,8 @@ __all__ = [
     "neighbours4",
 ]
 
-#: 方向 → (drow, dcol)。顺序固定为 `up, down, left, right`（与 `game.state.neighbours4` 一致）。
-DIR_DELTAS: Final[dict[str, tuple[int, int]]] = {
-    "up": (-1, 0),
-    "down": (1, 0),
-    "left": (0, -1),
-    "right": (0, 1),
-}
-
-#: 渲染折叠后的山地地形值（PROTOCOL.md §3.3 / R6.9）。AI 侧只能看到它。
-TERRAIN_MOUNTAIN_VISIBLE: Final[int] = 2
-
-
-def neighbours4(index: int, size: int) -> dict[str, int]:
-    """返回 4 相邻地块（AI_API.md §2 示例里的同名工具）。
-
-    前置：`0 <= index < size*size`。
-    后置：返回 `{dir: neighbour_index}`，仅包含**未越界**的方向；键顺序固定 `up/down/left/right`。
-    抛出：无（越界输入返回空 dict）。
-    """
-    row, col = divmod(int(index), int(size))
-    out: dict[str, int] = {}
-    for direction in ("up", "down", "left", "right"):
-        dr, dc = DIR_DELTAS[direction]
-        r, c = row + dr, col + dc
-        if 0 <= r < size and 0 <= c < size:
-            out[direction] = r * size + c
-    return out
+#: 随服务端内置的策略名（升序）。`ai.loader` 用它区分「内置」与「`ai/` 目录加载」。
+BUILTIN_NAMES: Final[tuple[str, ...]] = ("greedy", "hold", "random")
 
 
 @register("hold")
@@ -67,6 +51,8 @@ class Hold:
     """`hold`：什么都不做（压测/对照组，AI_API.md §4）。"""
 
     name = "hold"
+    label = "Hold（不操作）"
+    description = "对照/压测用：每个 Tick 都不提交任何指令。"
 
     def reset(self, spec: GameSpec) -> None:
         """开局初始化：记录地图边长。前置/后置/抛出：无。"""
@@ -91,6 +77,8 @@ class Greedy:
     """
 
     name = "greedy"
+    label = "Greedy（贪心扩张）"
+    description = "确定性贪心：先占相邻空地，其次打兵力最弱的相邻敌格。"
 
     def reset(self, spec: GameSpec) -> None:
         """开局初始化：记录地图边长。前置/后置/抛出：无。"""
@@ -143,6 +131,8 @@ class Random:
     """
 
     name = "random"
+    label = "Random（随机，仅测试）"
+    description = "在合法调兵里等概率挑一条；比例也从十档随机取，仅供测试。"
 
     def __init__(self, seed: int = 0) -> None:
         self._rng = random.Random(int(seed))

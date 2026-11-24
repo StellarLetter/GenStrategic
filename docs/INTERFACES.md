@@ -237,11 +237,28 @@ class Room:
     state: GameState | None            # None = 等待中
     @property
     def size(self) -> int | None       # 开局后 == state.size；未开局为 None（R2.3）
-    def add(self, conn: Connection, name: str, spectate: bool) -> Seat
+    def add(self, conn: Connection, name: str, spectate: bool, *, bot: str | None = None) -> Seat
     def handle(self, seat: Seat, frame: dict) -> None
+    def set_autopilot(self, seat: Seat, name: str | None) -> str | None
+                                       # 设置/取消策略托管；返回实际生效的策略名
+    def strategy_state(self) -> list[dict]   # 各座位 bot/autopilot/error（排错用）
+    def step_once(self) -> None        # 推进 1 Tick（先步进策略，再推进内核）
+    async def step_async(self) -> None # 同上，但策略决策走线程池（远程策略用）
     async def run(self) -> None        # 驱动 Tick 时钟，直到对局结束
     def broadcast(self, frame: dict) -> None
 ```
+
+`Seat` 的策略相关字段：
+
+| 字段/属性 | 说明 |
+| --- | --- |
+| `bot` | 机器人座位的策略名（`join.bot`）；有它就没有真人连接 |
+| `autopilot` | 真人座位的托管策略名；`None` = 人工操作 |
+| `.strategy` | 当前生效的策略名（`bot` 优先，其次 `autopilot`），`None` = 非 AI |
+| `.ai_controlled` | 是否正在由策略决策 |
+
+`set_autopilot` 抛出：`ProtocolError('bad_frame')`（策略未注册）、
+`ProtocolError('not_your_turn')`（观战者/已出局）。
 
 地图边长由开局玩家数决定（R2.3），构造参数 `size=` 仅供测试显式覆盖。
 
@@ -258,7 +275,7 @@ class Session:
 
 ## 3. `server/generals/ai` — 比赛策略 AI 接入
 
-完整说明见 **[AI_API.md](./AI_API.md)**。摘要：
+完整说明见 **[AI_API.md](./AI_API.md)**（只读那一份即可写出一个策略）。摘要：
 
 ```python
 class Agent(Protocol):
@@ -270,26 +287,81 @@ class Agent(Protocol):
 class Observation:
     turn: int; half: int
     size: int
-    me: int
+    me: int                      # 观战者为 -1
     tiles: list[TileView]        # 与 view.project 相同的视野裁剪
     my_army: int; my_land: int
     leaderboard: list[Row]
+    chain: list[MoveRequest]
 
 @dataclass
 class Action:
     op: Literal["move", "clear", "pop", "select"]
     src: int = 0; dir: str = ""; ratio: float = 1.0; tile: int = 0
+    def to_command(self) -> dict   # 比例经 quantize_ratio 量化到 RATIOS
 
-RATIOS: tuple[float, ...]  # 与真人一致的调兵比例十档（R6.6），Action.ratio 经 to_command() 量化
+RATIOS: tuple[float, ...]      # 与真人一致的调兵比例十档（R6.6）
 
 def register(name: str) -> Callable[[type], type]: ...   # registry.register
 def get(name: str) -> type[Agent]: ...
+def all_names() -> list[str]: ...
+def registered(name: str) -> bool: ...
+def make_agent(name: str, *args, **kwargs) -> Agent: ...  # 每座位一个独立实例
+
+# 工具（generals.ai.api）
+def neighbours4(index: int, size: int) -> dict[str, int]: ...
+TERRAIN_MOUNTAIN_VISIBLE: int               # = 2
+DIR_DELTAS: dict[str, tuple[int, int]]
 ```
 
-接入方式二选一：
+### 3.1 自动挂载（`ai.loader`）
 
-1. **进程内**：`ai.register("mybot")(MyAgent)`，然后用 `{"t":"join","bot":"mybot"}` 加入座位。
-2. **进程外**：实现 `POST /api/ai/decide` 的 HTTP 策略服务；用 `generals.ai.remote_client` 连进来。
+```python
+class StrategyLoader:
+    def __init__(self, directory: Path | None = None)  # 缺省 <repo>/ai（可用 GENERALS_AI_DIR 覆盖）
+    def scan(self) -> LoadReport             # 扫描并加载目录下全部策略；可重复调用（热重载）
+
+@dataclass(frozen=True)
+class StrategyInfo:
+    name: str; label: str; description: str; source: str; builtin: bool
+    def to_wire(self) -> dict
+
+@dataclass
+class LoadReport:
+    directory: str
+    strategies: list[StrategyInfo]           # 含内置策略，按 name 升序
+    errors: list[dict]                       # [{"file", "error"}]，按文件名升序
+    files: list[str]
+    def to_wire(self) -> dict
+
+def ai_dir() -> Path                         # 解析策略根目录
+```
+
+**前置/后置/抛出**：构造与 `scan()` 都**不抛**；单个策略文件失败只进 `LoadReport.errors`，
+不影响其它策略与服务器启动。`scan()` 会把上一次由文件注册、本次不再出现的策略摘除。
+装配点 `app.py` 在 lifespan 里调用一次 `scan()`；`POST /api/ai/reload` 再调用一次。
+
+### 3.2 座位驱动（`ai.runner`）
+
+```python
+@dataclass
+class AIRunner:
+    room: Any; player_id: int; agent: Agent
+    strategy_name: str | None      # 该 runner 驱动的策略名（Room 据此判断要不要重建）
+    def reset(self) -> None        # 调 agent.reset(spec_from_state(state))
+    def step(self) -> Action | None            # 同步：act + room.handle
+    async def step_async(self) -> Action | None  # 异步：act 走线程池（远程策略用）
+    def close(self) -> None
+```
+
+`Room` 持有 `seat → AIRunner` 映射（`Room._runners`），在**每 Tick 推进内核之前**
+统一 `step()`；策略异常被吞掉记进 `last_error`，对局照常推进。
+
+接入方式（三选一）：
+
+1. **界面/协议托管**：`autopilot` 帧把**自己的真人座位**交给策略（开局前指定即开局即生效）。
+2. **进程内机器人座位**：`{"t":"join","bot":"mybot"}`，该座位无连接、由策略驱动。
+3. **进程外**：实现 `POST /decide` 的 HTTP 策略服务，用 `generals.ai.remote_client.RemoteAgent`
+   包一层再 `register`。
 
 ---
 
@@ -314,6 +386,10 @@ export function pushMove(ch, dir, size, isBlocked): PushResult            // R6.
 export function neighbours4(idx: number, size: number): number[]
 export function neighbours8(idx: number, size: number): number[]
 export function step(idx: number, dir: Dir, size: number): number | null
+
+// state.ts 追加（R6.17 策略接管）
+autopilot: Record<number, string | null>       // playerId → 策略名；null = 人工操作
+export function autopilotOf(state: ClientState, id: number | null): string | null
 ```
 
 `web/src/core` 不 import `render` / `ui` / `input` / DOM API。

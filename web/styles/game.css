@@ -34,7 +34,8 @@
 #surrender-button,
 #fullscreen-button,
 #game-leaderboard-container,
-#in-game-chat {
+#in-game-chat,
+#autopilot-panel {
   position: fixed;
   z-index: 10;
 }
@@ -439,3 +440,80 @@
 /* ---------------------------------------------------------- 策略接管面板 */
 /* 默认在回合计数器下方（左上），窄条样式，不与排行榜/聊天抢位置。 */
 
+#autopilot-panel {
+  top: 52px;
+  left: 12px;
+  width: 190px;
+  padding: 6px 8px;
+  font-size: 13px;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 3px;
+  z-index: 25;
+  cursor: move;
+  touch-action: none;
+  user-select: none;
+}
+
+#autopilot-panel[hidden] {
+  display: none;
+}
+
+.autopilot-title {
+  margin-bottom: 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.72);
+}
+
+#autopilot-select {
+  width: 100%;
+  padding: 3px 4px;
+  font-size: 13px;
+  color: #ffffff;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+#autopilot-select option {
+  color: #111111;
+  background: #ffffff;
+}
+
+#autopilot-reload {
+  width: 100%;
+  margin-top: 4px;
+  padding: 3px 4px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--accent);
+  background: #ffffff;
+  border: none;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+#autopilot-reload:hover:not(:disabled) {
+  color: #ffffff;
+  background: var(--accent);
+}
+
+#autopilot-reload:disabled {
+  color: #777777;
+  background: #cfcfcf;
+  cursor: not-allowed;
+}
+
+.autopilot-status {
+  margin-top: 4px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: rgba(255, 255, 255, 0.78);
+  word-break: break-word;
+}
+
+.autopilot-status.is-error {
+  color: #ff9d9d;
+}

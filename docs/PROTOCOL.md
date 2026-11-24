@@ -29,8 +29,12 @@ ws://<host>:<port>/ws
 | `name` | string(1..16) | ✔ | 昵称，重名自动加后缀 |
 | `room` | string | ✘ | 缺省 = 加入/创建公共房 |
 | `spectate` | bool | ✘ | true = 观战者占位（不占玩家座） |
+| `bot` | string | ✘ | 策略注册名：该座位由进程内策略接管，**不需要** WS 连接来操作它（AI_API.md §4.3） |
 
 回应：`{ "t": "joined", "playerId": 3, "roomId": "...", "seat": 0, "token": "..." }`
+
+> `bot` 未注册时回 `reject(code="bad_frame")`。带 `bot` 的座位仍是普通**玩家座**
+> （占一个玩家名额、参与排行榜）；它只是不消费下行的 WS 帧。
 
 ### 2.2 `spectate`
 ```json
@@ -100,6 +104,24 @@ ws://<host>:<port>/ws
 { "t": "ping", "n": 12 }
 ```
 回应 `{ "t": "pong", "n": 12 }`。
+
+### 2.8 `autopilot` — 交由策略接管自己的座位
+```json
+{ "t": "autopilot", "strategy": "my-bot" }
+{ "t": "autopilot", "strategy": null }
+```
+| 字段 | 类型 | 必需 | 说明 |
+| --- | --- | --- | --- |
+| `strategy` | string \| null | ✔ | 策略注册名（见 §4）；`null` / 空串 / 省略 = **收回操作权**（回到真人操作） |
+
+语义：
+
+- **开局前**发送即生效：开局第一刻起就由该策略操作（推荐用这个方式指定接管）。
+- **开局中**发送也生效：下一 Tick 起切换；`strategy: null` 立刻收回操作权。
+- 该帧只影响**自己**的座位；观战者发送回 `reject(code="not_your_turn")`。
+- 策略未注册 → `reject(code="bad_frame")`。
+- 成功时服务端向**全房间**广播 §3.11 的 `autopilot` 回执帧（托管状态对所有人可见）。
+- 机器人座位（§2.1 `join.bot` 非空）收到该帧 = **替换**它的策略。
 
 ---
 
@@ -195,6 +217,19 @@ ws://<host>:<port>/ws
 { "t": "reject", "op": "move", "seq": 4, "code": "not_owned" }
 ```
 
+### 3.11 `autopilot` — 座位托管状态
+```json
+{ "t": "autopilot", "playerId": 0, "strategy": "my-bot" }
+{ "t": "autopilot", "playerId": 1, "strategy": null }
+```
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `playerId` | int | 该座位在内核里的玩家 id（与 `joined.playerId` 同源） |
+| `strategy` | string \| null | 当前接管该座位的策略名；`null` = 人工操作 |
+
+广播时机：任何人成功切换托管（§2.8）时向**全房间**广播一帧（含观战者）。
+客户端据此渲染"谁在托管"，与 `game_start` / `tiles` 等帧无顺序依赖、可随时收到。
+
 ---
 
 ## 4. HTTP
@@ -203,9 +238,21 @@ ws://<host>:<port>/ws
 | --- | --- | --- |
 | `GET` | `/api/rooms` | 房间列表 `[{id, name, players, maxPlayers, state}]` |
 | `GET` | `/api/config` | 客户端启动参数 `{tickMs, maxPlayers, minSize, maxSize, colors}` |
+| `GET` | `/api/ai/strategies` | 可用策略清单 `{directory, strategies, errors, files}` |
+| `POST` | `/api/ai/reload` | 重新扫描策略目录，返回与上者同构的响应体 |
 | `GET` | `/healthz` | 存活探针 `{"ok": true}` |
 | `GET` | `/waiting.html` | 房间列表页 |
 | `GET` | `/` | 游戏页 |
+
+`/api/ai/strategies` 的 `strategies` 每项：
+
+```json
+{ "name": "my-bot", "label": "我的机器人", "description": "一句话说明",
+  "source": "my_bot.py", "builtin": false }
+```
+
+`source` 为相对策略根目录的文件名，内置策略为 `"builtin"`；`errors` 为
+`[{"file": "broken.py", "error": "SyntaxError: …"}]`。详见 AI_API.md §3。
 
 > 地图边长不由客户端指定（R2.3）：开局时按玩家数计算，实际值从 `game_start.size` 读取。
 

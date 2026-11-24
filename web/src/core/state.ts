@@ -47,6 +47,8 @@ export interface ClientState {
   lastError: string | null;
   /** 最近一条 `chain_dropped` 提示（R4.12），UI 显示后由 main 清空。 */
   lastDropped: DroppedNotice | null;
+  /** 各座位的策略接管状态（PROTOCOL §3.11）：`playerId → 策略名`；`null` = 人工操作。 */
+  autopilot: Record<number, string | null>;
 }
 
 /** 一条「调兵请求作废」提示（PROTOCOL §3.7 `chain_dropped`）。 */
@@ -78,7 +80,20 @@ export function emptyState(size = 20): ClientState {
     winner: null,
     lastError: null,
     lastDropped: null,
+    autopilot: {},
   };
+}
+
+/**
+ * 某座位当前接管的策略名（`null` = 人工操作）。
+ *
+ * 前置：`id` 可为 `null`（观战者）。
+ * 后置：已收到过该玩家 `autopilot` 帧时返回其策略名（可能是 `null`）；否则返回 `null`。
+ * 抛出：无。
+ */
+export function autopilotOf(state: ClientState, id: number | null): string | null {
+  if (id === null) return null;
+  return state.autopilot[id] ?? null;
 }
 
 export function playerOf(state: ClientState, id: number | null): PlayerInfo | undefined {
@@ -170,6 +185,11 @@ export function applyFrame(state: ClientState, frame: ServerFrame): ClientState 
         };
       }
       return state;
+    case 'autopilot': {
+      // 某座位的托管状态变化（PROTOCOL §3.11）。`strategy: null` 表示收回操作权。
+      const autopilot = { ...state.autopilot, [frame.playerId]: frame.strategy };
+      return { ...state, autopilot };
+    }
     case 'reject':
       return { ...state, lastError: frame.code };
     default:

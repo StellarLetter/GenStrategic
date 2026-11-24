@@ -166,6 +166,16 @@ export interface FrameJoined {
   token?: string;
 }
 
+/**
+ * `autopilot` 回执（PROTOCOL §3.11）：某座位当前由哪个策略接管。
+ * `strategy: null` = 人工操作。该帧广播给全房间。
+ */
+export interface FrameAutopilot {
+  t: 'autopilot';
+  playerId: number;
+  strategy: string | null;
+}
+
 export type ServerFrame =
   | FrameGameStart
   | FrameTurn
@@ -177,7 +187,8 @@ export type ServerFrame =
   | FrameChat
   | FrameGameOver
   | FrameReject
-  | FrameJoined;
+  | FrameJoined
+  | FrameAutopilot;
 
 // ---------------------------------------------------------------- 上行帧
 
@@ -195,4 +206,5 @@ export type ClientFrame =
   | { t: 'commands'; cmds: ClientCommand[] }
   | { t: 'chat'; text: string }
   | { t: 'surrender' }
+  | { t: 'autopilot'; strategy: string | null }
   | { t: 'ping'; n: number };

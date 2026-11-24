@@ -89,6 +89,10 @@ class AIRunner:
     def __post_init__(self) -> None:
         self.last_error: BaseException | None = None
         self.last_action: Action | None = None
+        #: 该 runner 驱动的策略名（`Room` 用它判断「策略换了要不要重建实例」）。
+        self.strategy_name: str | None = getattr(self.agent, "name", None)
+        #: 该 runner 绑定的座位序号（`Room` 侧排错用）。
+        self.seat_seq: int | None = None
         self._started = False
         self._seat = None
 

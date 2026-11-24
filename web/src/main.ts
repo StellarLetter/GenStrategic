@@ -30,6 +30,7 @@ import { bindKeyboard } from './input/keyboard';
 import { bindPointer } from './input/pointer';
 import { cellSize, hitTest, makeCamera, mapOrigin, panPixels, panTiles, tileRect, zoomAt, type Camera } from './render/camera';
 import { paint } from './render/painter';
+import { AutopilotPanel } from './ui/autopilot';
 import { Chat } from './ui/chat';
 import { makeDraggable } from './ui/floating';
 import { Leaderboard } from './ui/leaderboard';
@@ -103,6 +104,8 @@ async function toggleFullscreen(): Promise<void> {
 const turnCounter = new TurnCounter(page);
 const leaderboard = new Leaderboard(page);
 const chat = new Chat(page);
+// 策略接管：下拉框内容来自 `GET /api/ai/strategies`（服务端自动挂载 ai/ 目录）。
+const autopilot = new AutopilotPanel(page);
 
 // 五个浮动面板：可拖动，位置存 localStorage['generals.panel.<id>']（见 ui/floating.ts）。
 // 面板是独立 DOM 层，panel 上的 pointer 事件不会落到 canvas 上，点击面板不会选中地块。
@@ -112,6 +115,7 @@ makeDraggable(surrenderButton);
 makeDraggable(fullscreenButton);
 makeDraggable(leaderboard.element);
 makeDraggable(chat.element, { handle: chat.dragHandle });
+makeDraggable(autopilot.element);
 
 // ------------------------------------------------------------ 状态
 
@@ -150,6 +154,7 @@ function draw(): void {
   turnCounter.render(state);
   leaderboard.render(state);
   chat.render(state);
+  autopilot.render(state);
   syncButtons();
 }
 
@@ -239,6 +244,9 @@ bindKeyboard({
 });
 
 chat.onSend = (text) => send({ t: 'chat', text });
+// 策略接管：选「我自己操作」发 `strategy: null` 收回操作权（PROTOCOL §2.8）。
+// 开局前后都可以切换：服务端以 `autopilot` 回执为准，前端不本地假设。
+autopilot.onSelect = (strategy) => send({ t: 'autopilot', strategy });
 startButton.addEventListener('click', () => {
   if (DEMO) return;
   send({ t: 'start' });

@@ -9,6 +9,7 @@
 - `register` / `get` / `all_names`：策略注册表
 - `AIRunner` / `make_agent`：把策略挂到房间座位上
 - `RemoteAgent`：进程外（HTTP）策略客户端
+- `StrategyLoader` / `ai_dir`：策略目录**自动挂载**（默认 `<repo>/ai`，AI_API.md §3）
 - `builtin`：内置策略模块（import 即完成 `hold` / `greedy` / `random` 的注册）
 """
 
@@ -25,7 +26,8 @@ from .api import (
     to_observation,
     to_observation_for,
 )
-from .builtin import Greedy, Hold, Random, neighbours4
+from .builtin import BUILTIN_NAMES, Greedy, Hold, Random, neighbours4
+from .loader import DEFAULT_AI_DIR, LoadReport, StrategyInfo, StrategyLoader, ai_dir
 from .registry import all_names, get, register, registered
 from .remote_client import RemoteAgent
 from .runner import AIRunner, make_agent, spec_from_state
@@ -34,14 +36,20 @@ __all__ = [
     "AIRunner",
     "Action",
     "Agent",
+    "BUILTIN_NAMES",
+    "DEFAULT_AI_DIR",
     "GameSpec",
     "Greedy",
     "Hold",
+    "LoadReport",
     "Observation",
     "RATIOS",
     "Random",
     "RemoteAgent",
     "Row",
+    "StrategyInfo",
+    "StrategyLoader",
+    "ai_dir",
     "all_names",
     "builtin",
     "get",

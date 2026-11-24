@@ -100,6 +100,9 @@ class Seat:
     - `seq`   —— 房间内自增席位号（0 起），用于 `joined` 帧的 `seat` 字段。
     - `player_id` —— 内核里的玩家 id；**观战者为 `None`**（`view.project(state, None)`）。
     - `bot`   —— 进程内 AI 策略名（`join.bot`）；非空时该座位由 `ai.runner.AIRunner` 接管，无 WS 连接。
+    - `autopilot` —— 真人座位被策略接管时的策略名（`autopilot` 帧）；`None` = 人工操作。
+      与 `bot` 的区别：`bot` 是**没有真人**的机器人座位（开局前由房主/客户端指定），
+      `autopilot` 是**有真人**（连接仍在，可随时收回操作权）的托管。
     - `queue` —— 该连接的下行帧队列（同步 `broadcast` 只做 `put_nowait`）。
     - `last_view` —— 上一次下发的 `TileView` 列表，用于计算增量与「新进入视野补发」。
     - `last_sight` —— 上一次可见地块集合（`GameState.visible_tiles`；观战者为全图）。
@@ -115,6 +118,7 @@ class Seat:
     player_id: int | None
     spectate: bool = False
     bot: str | None = None
+    autopilot: str | None = None
     token: str = ""
     conn: Connection | None = None
     queue: asyncio.Queue[str] = field(default_factory=lambda: asyncio.Queue(QUEUE_MAXSIZE))
@@ -128,6 +132,16 @@ class Seat:
     def is_bot(self) -> bool:
         """是否由进程内 AI 接管（无 WS 连接）。"""
         return self.bot is not None
+
+    @property
+    def strategy(self) -> str | None:
+        """当前正在驱动该座位的策略名：机器人座位取 `bot`，托管中的真人座位取 `autopilot`。"""
+        return self.bot if self.bot is not None else self.autopilot
+
+    @property
+    def ai_controlled(self) -> bool:
+        """该座位是否**正在**由策略决策（`bot` 或 `autopilot` 生效）。"""
+        return self.strategy is not None
 
     @property
     def joined(self) -> bool:
@@ -232,6 +246,11 @@ class Room:
         #: 已播报过 `"<name> left."` 的对象键（R6.10：同一个人只播一次）。
         #: 键为 `("p", player_id)`（玩家）或 `("s", seat_seq)`（无 player_id 的座位）。
         self._left_announced: set[tuple[str, int]] = set()
+        #: 座位 → `ai.runner.AIRunner`。`bot` 座位与托管中的真人座位都在这里；
+        #: **每个座位一个独立策略实例**（策略可能带状态，实例共用会互串）。
+        self._runners: dict[int, Any] = {}
+        #: 策略实例化失败的原因（座位 seq → 文本），供 `/api/ai/state` 与测试排错。
+        self._strategy_errors: dict[int, str] = {}
 
     # ------------------------------------------------------------------
     # 构造期查询
@@ -474,6 +493,10 @@ class Room:
         self.state = state
         self.phase = RoomState.RUNNING
 
+        # 策略接管必须在**广播开局帧之前**建好：机器人/AI 托管座位的行为与真人一样，
+        # 从 Turn 0 的第一刻就该开始决策（R1.2 / R4.7）。建 runner 不推进任何状态。
+        self._sync_runners()
+
         frame = self._game_start_frame(state)
         self.broadcast(frame)
         for seat in self._seats_sorted():
@@ -503,6 +526,141 @@ class Room:
             # 没有事件循环（同步测试直接调 start()/step_once()）：由调用方驱动。
             return
         self._loop_task = asyncio.create_task(self.run())
+
+    # ------------------------------------------------------------------
+    # 策略座位（bot / autopilot）
+    # ------------------------------------------------------------------
+    def _sync_runners(self) -> None:
+        """让 `_runners` 与座位的当前策略选择保持一致（内部，幂等）。
+
+        前置：无（未开局时也安全，只是建不出 runner）。
+        后置：
+        - `seat.ai_controlled` 的每个玩家座位都持有一个**独立**的 `AIRunner`；
+        - 策略名变了 / 座位已不再由策略接管 / 座位已销毁 → 旧 runner 被 `close()` 并摘除；
+        - 策略名已注册但实例化失败 → 记进 `_strategy_errors`（该座位退化为不操作，
+          **不影响**其它座位与对局推进）。
+        抛出：无 —— 策略构造失败一律收敛为 `_strategy_errors`。
+        """
+        if self.state is None:
+            return
+        live: dict[int, Any] = {}
+        for seat in self._seats_sorted():
+            name = seat.strategy
+            if name is None or seat.spectate or seat.player_id is None or seat.closed:
+                continue
+            current = self._runners.get(seat.seq)
+            if current is not None and getattr(current, "strategy_name", None) == name:
+                live[seat.seq] = current
+                continue
+            if current is not None:
+                _safe_close(current)
+            runner = self._make_runner(seat, name)
+            if runner is not None:
+                live[seat.seq] = runner
+        for seq, runner in self._runners.items():
+            if seq not in live:
+                _safe_close(runner)
+        self._runners = live
+
+    def _make_runner(self, seat: Seat, name: str) -> Any | None:
+        """为某座位实例化策略并包成 `AIRunner`（内部）。
+
+        前置：`seat.player_id` 非空，`name` 是策略注册名。
+        后置：成功返回已 `reset()` 的 `AIRunner`（策略实例独立）；失败返回 `None`
+              并把原因写进 `_strategy_errors[seat.seq]`。
+        抛出：无。
+        """
+        try:
+            from generals.ai import AIRunner, make_agent
+
+            agent = make_agent(name)
+        except Exception as exc:  # noqa: BLE001 - 策略构造失败不该拖垮房间
+            self._strategy_errors[seat.seq] = f"{type(exc).__name__}: {exc}"
+            return None
+        self._strategy_errors.pop(seat.seq, None)
+        runner = AIRunner(room=self, player_id=seat.player_id, agent=agent)
+        runner.strategy_name = name
+        runner.seat_seq = seat.seq
+        try:
+            runner.reset()
+        except Exception as exc:  # noqa: BLE001 - reset 由 AIRunner 内部兜底，这里再保一层
+            runner.last_error = exc
+        return runner
+
+    def _step_runners(self) -> None:
+        """在**推进 Tick 之前**让每个策略座位各提交 1 条指令（内部）。
+
+        前置：无（未开局/已结束时直接返回）。
+        后置：
+        - 每个策略座位至多提交 1 条指令（R4.7 每刻 1 条），指令走 `Room.handle()`
+          与真人完全相同的校验路径（**没有作弊通道**）；
+        - 策略抛出的异常被 `AIRunner` 吞掉并记在 `last_error`，对局照常推进。
+        抛出：无。
+        """
+        if self.state is None or self.state.ended or self._closed:
+            return
+        for seq in sorted(self._runners):
+            runner = self._runners[seq]
+            try:
+                runner.step()
+            except Exception:  # noqa: BLE001 - AIRunner.step 已兜底，这里防自定义策略破坏约定
+                continue
+
+    def set_autopilot(self, seat: Seat, name: str | None) -> str | None:
+        """设置/取消某真人座位的策略托管（`autopilot` 帧 / HTTP 入口）。
+
+        前置：`seat` 是玩家座位且未出局；`name` 为 `None`（取消托管）或已注册的策略名。
+        后置：
+        - 成功时 `seat.autopilot = name`，下一 Tick 起由该策略决策（立即 `_sync_runners()`）；
+        - `name is None` 时取消托管，操作权立刻回到真人（策略实例被 `close()`）；
+        - 机器人座位（`bot` 非空）改投策略名会**替换**其策略，便于换策略；
+        - 返回**实际生效**的策略名（取消托管返回 `None`）。
+        抛出：
+        - `protocol.ProtocolError('bad_frame')` —— 未注册的策略名；
+        - `protocol.ProtocolError('not_your_turn')` —— 观战者 / 已出局。
+        """
+        if seat.spectate or seat.player_id is None:
+            raise protocol.ProtocolError("not_your_turn", "spectator cannot be automated")
+        if name is not None:
+            from generals.ai import registered
+
+            if not registered(name):
+                raise protocol.ProtocolError("bad_frame", f"unknown strategy: {name!r}")
+        if seat.bot is not None:
+            # 机器人座位：直接换策略（它本来就没有真人操作）。
+            seat.bot = name
+        else:
+            seat.autopilot = name
+        self._sync_runners()
+        # 广播回执：托管状态对全房间可见（观战者据此显示「谁在托管」）。
+        if seat.player_id is not None:
+            self.broadcast(protocol.encode_autopilot(seat.player_id, seat.strategy))
+        return seat.strategy
+
+    def strategy_state(self) -> list[dict]:
+        """当前各座位的策略接管状态（供 `GET /api/ai/state` 与测试）。
+
+        前置：无。
+        后置：按席位号升序返回 `[{seat, playerId, name, bot, autopilot, error}]`。
+        抛出：无。
+        """
+        rows: list[dict] = []
+        for seat in self._seats_sorted():
+            runner = self._runners.get(seat.seq)
+            rows.append(
+                {
+                    "seat": seat.seq,
+                    "playerId": seat.player_id,
+                    "name": seat.name,
+                    "bot": seat.bot,
+                    "autopilot": seat.autopilot,
+                    "error": self._strategy_errors.get(seat.seq),
+                    "lastError": None
+                    if runner is None or getattr(runner, "last_error", None) is None
+                    else str(runner.last_error),
+                }
+            )
+        return rows
 
     def _game_start_frame(self, state: GameState) -> dict:
         """构造 `game_start` 帧（PROTOCOL.md §3.1）。玩家列表按 `player_id` 升序（R7.3）。"""
@@ -563,6 +721,15 @@ class Room:
             self._handle_surrender(seat)
         elif kind == "start":
             self.start()
+        elif kind == "autopilot":
+            spec = protocol.validate_autopilot(frame)
+            name = spec["strategy"]
+            if name is not None:
+                from generals.ai import registered
+
+                if not registered(name):
+                    raise protocol.ProtocolError("bad_frame", f"unknown strategy: {name!r}")
+            self.set_autopilot(seat, name)
         elif kind == "ready":
             # R1.4：开局只由房主的 `start` 触发；`ready` 仅记录，不改变房间行为。
             return
@@ -713,21 +880,55 @@ class Room:
                 await asyncio.sleep(interval)
                 if self._closed:
                     break
-                self.step_once()
+                # 远程（HTTP）策略必须在线程池里跑，否则一次慢请求会卡住整个事件循环。
+                await self.step_async()
         except asyncio.CancelledError:
             raise
         finally:
             if self.phase is not RoomState.ENDED and state.ended:
                 self.phase = RoomState.ENDED
 
+    async def step_async(self) -> None:
+        """`step_once()` 的异步版：策略决策在线程池里执行（进程外 HTTP 策略用）。
+
+        前置：无（未开局/已结束时直接返回，不抛）。
+        后置：与 `step_once()` 完全等效 —— 唯一区别是 `agent.act()` 经
+              `asyncio.to_thread` 执行，不阻塞事件循环（`ai.remote_client` 是同步 httpx）。
+              策略**只决策一次**（`_advance()` 内部不会再步进策略）。
+        抛出：无。
+        """
+        if self.state is None or self.state.ended or self._closed:
+            return
+        for seq in sorted(self._runners):
+            runner = self._runners[seq]
+            try:
+                await runner.step_async()
+            except Exception:  # noqa: BLE001 - 见 _step_runners
+                continue
+        self._advance()
+
     def step_once(self) -> None:
         """同步推进 1 Tick 并广播本刻所有帧（供 `run()` 与测试直接调用）。
 
         前置：`self.state` 非空且 `not state.ended`。
         后置：
+        - **先**让策略座位各提交 1 条指令（与真人指令同一校验路径），再推进内核；
         - `state.tick` +1；帧顺序：`turn` → `tiles` → `leaderboard` → `commands` → 事件/聊天；
         - 结束时额外广播 `game_over`，`phase = ENDED`。
         抛出：无（内核 `step` 内部异常会向上抛，属于内核缺陷）。
+        """
+        if self.state is None or self.state.ended:
+            return
+        self._step_runners()
+        self._advance()
+
+    def _advance(self) -> None:
+        """推进内核 1 Tick 并广播本刻所有帧（内部；**不**步进策略）。
+
+        前置：`self.state` 非空且 `not state.ended`（调用方已判断）。
+        后置：`state.tick` +1；帧顺序：`turn` → `tiles` → `leaderboard` → `commands` → 事件/聊天；
+              结束时额外广播 `game_over`，`phase = ENDED`。
+        抛出：无（内核异常向上抛，属于内核缺陷）。
         """
         state = self.state
         if state is None or state.ended:
@@ -1088,13 +1289,17 @@ class Room:
         """停止 Tick 时钟并关闭所有座位（幂等）。
 
         前置：无。
-        后置：`_closed = True`；已运行的任务被 `cancel()`（调用方负责 await）；所有座位置 `closed`。
+        后置：`_closed = True`；已运行的任务被 `cancel()`（调用方负责 await）；所有座位置 `closed`；
+              所有策略实例被 `close()` 释放（远程策略释放连接池）。
         抛出：无。
         """
         self._closed = True
         task = self._loop_task
         if task is not None and not task.done():
             task.cancel()
+        for runner in self._runners.values():
+            _safe_close(runner)
+        self._runners = {}
         for seat in self.seats:
             seat.closed = True
         if self.phase is not RoomState.ENDED:
@@ -1122,6 +1327,21 @@ def _left_key(seat: Seat) -> tuple[str, int]:
     if seat.player_id is not None:
         return ("p", int(seat.player_id))
     return ("s", int(seat.seq))
+
+
+def _safe_close(runner: Any) -> None:
+    """释放一个 `AIRunner`（内部；任何异常都吞掉）。
+
+    前置：`runner` 可以是任意对象。
+    后置：若它提供 `close()` 则调用一次；异常被吞（策略资源释放失败不该阻断对局收尾）。
+    抛出：无。
+    """
+    closer = getattr(runner, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def _dir_name(direction: Any) -> str:

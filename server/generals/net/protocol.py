@@ -31,6 +31,7 @@ __all__ = [
     "validate_chat",
     "validate_commands",
     "validate_join",
+    "validate_autopilot",
     "validate_ping",
     "validate_spectate",
     "encode_joined",
@@ -40,6 +41,7 @@ __all__ = [
     "encode_sight",
     "encode_leaderboard",
     "encode_commands",
+    "encode_autopilot",
     "encode_event",
     "encode_chat",
     "encode_chain_dropped",
@@ -75,7 +77,7 @@ OPS: Final[tuple[str, ...]] = ("move", "clear", "pop", "select")
 
 #: 上行帧类型集合（PROTOCOL.md §2）。
 CLIENT_FRAME_TYPES: Final[frozenset[str]] = frozenset(
-    {"join", "spectate", "ready", "start", "commands", "chat", "surrender", "ping"}
+    {"join", "spectate", "ready", "start", "commands", "chat", "surrender", "ping", "autopilot"}
 )
 
 #: 系统聊天的 `kind` 集合（R6.10：聊天栏**只允许**这三种系统消息）。
@@ -117,6 +119,9 @@ ERROR_CODES: Final[frozenset[str]] = frozenset(
 
 #: 昵称长度上限（PROTOCOL.md §2.1：`string(1..16)`）。
 NAME_MAX_LEN: Final[int] = 16
+
+#: 策略名长度上限（`autopilot` 帧 / `join.bot`；与 `ai.loader` 保持一致）。
+STRATEGY_MAX_LEN: Final[int] = 64
 
 
 # ---------------------------------------------------------------------------
@@ -261,6 +266,30 @@ def validate_join(frame: dict) -> dict:
         bot = bot.strip() or None
 
     return {"name": name, "room": room, "spectate": spectate, "bot": bot}
+
+
+def validate_autopilot(frame: dict) -> dict:
+    """校验 `autopilot` 帧（PROTOCOL.md §2.8）。
+
+    前置：`frame["t"] == "autopilot"`。
+    后置：返回 `{"strategy": str | None}`：
+          `"strategy": null` 或空串 = **取消托管**（操作权回到真人）；
+          非空字符串 = 交给该策略（是否已注册由 `Room` 校验，本函数只查结构）。
+    抛出：`ProtocolError('bad_frame')` —— `strategy` 既不是 `null` 也不是字符串，
+          或字符串超长（> `STRATEGY_MAX_LEN`）。
+    """
+    frame = _require_dict(frame)
+    raw = frame.get("strategy", frame.get("bot"))
+    if raw is None:
+        return {"strategy": None}
+    if not isinstance(raw, str):
+        raise ProtocolError("bad_frame", "strategy must be a string or null")
+    name = raw.strip()
+    if not name:
+        return {"strategy": None}
+    if len(name) > STRATEGY_MAX_LEN:
+        raise ProtocolError("bad_frame", "strategy name too long")
+    return {"strategy": name}
 
 
 def validate_spectate(frame: dict) -> dict:
@@ -563,6 +592,17 @@ def encode_chat(
             frame["target"] = str(target)
             frame["targetColor"] = str(target_color) if target_color is not None else str(color)
     return frame
+
+
+def encode_autopilot(player_id: int, strategy: str | None) -> dict:
+    """构造 `autopilot` 回执帧（PROTOCOL.md §3.11）。
+
+    前置：`player_id >= 0`；`strategy` 为已注册的策略名或 `None`（取消托管）。
+    后置：返回 `{"t": "autopilot", "playerId", "strategy"}`；`strategy=null` 表示人工操作。
+          该帧**广播给全房间**：机器人/托管状态对所有人可见，观战者也能看出谁在托管。
+    抛出：无。
+    """
+    return {"t": "autopilot", "playerId": int(player_id), "strategy": strategy}
 
 
 def encode_game_over(winner: int | None, turn: int) -> dict:

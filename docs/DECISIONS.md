@@ -5,6 +5,56 @@
 
 ---
 
+## 2026-11-24 · 第八批：策略自动挂载与「策略接管」（R6.17）
+
+**用户原话**
+
+> 完善 AI 接入手册，使得可以仅阅读手册就完成编写，自动挂载根目录 ai 下的所有策略，
+> Web 界面可以选择本玩家由某个策略接管
+
+**追问与澄清（用户选择）**
+
+| 议题 | 结论 |
+| --- | --- |
+| 何时指定接管 | **通常在开局前指定**（开局前指定即从 `Turn 0` 第一刻起生效）；开局中切换也保留 |
+| 接管对象 | **本玩家自己的座位**（真人连接仍在，可随时收回操作权） |
+| 策略根目录 | 仓库根的 `ai/`（`D:\COSMOS\generals\ai`） |
+
+**发现的问题（实现前实测）**
+
+`Seat.bot` 从上线起只是**占位**：`Lobby.join(bot=...)` 校验了名字已注册，但
+`Room` 里**没有任何代码实例化或驱动 `AIRunner`**。`test_net_ai_integration.py` 也就只能
+手动 `AIRunner(...)` 去驱动座位 —— 也就是说，协议上的"机器人座位"在前端/服务端链路里是死的。
+
+**结论与落地**
+
+| 议题 | 结论 | 依据/影响 |
+| --- | --- | --- |
+| 自动挂载 | 新增 `ai/loader.py`：启动时扫描 `<repo>/ai`，把每个 `.py` 当独立模块执行其 `@register` | 用户要求"自动挂载根目录 ai 下的所有策略"；`GENERALS_AI_DIR` 可换目录 |
+| 错误隔离 | 单个文件失败只进 `LoadReport.errors`，不进注册表、不阻塞启动 | 一个坏文件不该让整局游戏起不来 |
+| 热重载 | `StrategyLoader.scan()` 先摘掉上一轮由文件注册的名字再重扫；`POST /api/ai/reload` 触发 | 改名/删除/改内容都即时生效，无需重启 |
+| 机器人座位 | `Room` 新增 `_runners`（seat → AIRunner），`start()` 时建好、每 Tick 推进内核**之前**统一 `step()` | 修掉上面那个"bot 只是占位"的缺陷 |
+| 接管机制 | 新增 `Seat.autopilot` 与 `autopilot` 帧（上行）+ `autopilot` 回执帧（下行广播） | 用户要求"选择本玩家由某个策略接管"；`bot`（无连接的机器人座）与 `autopilot`（真人座的托管）语义区分开 |
+| 开局前指定 | `Room.set_autopilot()` 在 `WAITING` 阶段即可调用，`start()` 内 `_sync_runners()` 生效 | 用户明确"通常在开局前指定接管" |
+| 远程策略 | Tick 循环改走 `Room.step_async()`（策略在线程池），`step_once()` 保持同步语义 | `RemoteAgent` 是同步 httpx，直接调用会卡住事件循环；同时保证**每刻只决策一次** |
+| 界面 | 新增浮动面板 `web/src/ui/autopilot.ts`：下拉框列出策略、选中即发帧、可收回 | 复用 `ui/floating.ts` 的拖动与位置记忆（R6.14） |
+| 手册 | `docs/AI_API.md` 重写为自包含手册：数据契约 / 目录规则 / 三种接入方式 / 离线开发 / 十个坑 / 排错表 | 用户要求"仅阅读手册就完成编写" |
+
+**受影响**：
+`docs/RULES.md` 新增 **R6.17**；`docs/AI_API.md`（整体重写）、`docs/PROTOCOL.md`（§2.1 补 `bot`、
+新增 §2.8 `autopilot` 与 §3.11 回执、§4 接口表）、`docs/INTERFACES.md`（§2.2 `Room` / `Seat`、
+§3 `ai` 全节）、`docs/ARCHITECTURE.md`（目录树、依赖说明）、`AGENT.md`、`README.md`；
+`server/generals/ai/loader.py`（新增）、`ai/registry.py`（`snapshot`/`unregister`）、
+`ai/builtin.py`（`BUILTIN_NAMES` + 界面元信息）、`ai/api.py`（`neighbours4` 等工具上移，供策略单点导入）、
+`ai/runner.py`（`strategy_name`/`seat_seq`）、`net/room.py`（`_runners` / `set_autopilot` /
+`step_async` / `_advance`）、`net/protocol.py`（`validate_autopilot` / `encode_autopilot`）、
+`transport/http_routes.py`（`/api/ai/strategies`、`/api/ai/reload`）、`app.py`（装配 loader）、
+`web/src/ui/autopilot.ts`（新增）、`web/src/core/{types,state}.ts`、`web/src/main.ts`、
+`web/styles/game.css`、`ai/{README.md,sample_greedy.py}`（新增）。
+测试：新增 `server/tests/test_ai_loader.py`（23 例）、`server/tests/test_net_ai_api.py`（5 例）。
+
+---
+
 ## 2026-11-24 · 第七批：缩放锚点、无限制平移、capture 只播停止抵抗、全屏与面板收起
 
 **用户原话**
@@ -35,6 +85,8 @@
 `web/styles/game.css`、`web/scripts/e2e-page.mjs`（锚点缩放、无边界平移、全屏调用、折叠、隐藏断言）。
 测试：`server/tests/test_net_chat_surrender.py` 新增 `test_plain_tile_capture_is_silent_r6_10`，
 原有 `captured` 用例改用「攻陷王城」构造（普通占格不再播报）。
+
+---
 
 ## 2026-11-24 · 修复：攻打敌方 0 兵力地块必须易手
 

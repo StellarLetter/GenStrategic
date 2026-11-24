@@ -20,7 +20,7 @@
 | 2 | `docs/ARCHITECTURE.md` | 分层、依赖方向、目录树、一个 Tick 的数据流 |
 | 3 | `docs/INTERFACES.md` | 每个模块的黑盒调用契约（签名 + 前后置条件） |
 | 4 | `docs/PROTOCOL.md` | WebSocket / HTTP 帧格式与错误码 |
-| 5 | `docs/AI_API.md` | 比赛策略 AI 的接入接口 |
+| 5 | `docs/AI_API.md` | **策略接入手册**：只读这一份就能写出并上场一个策略（数据结构 / 自动挂载 / 接管 / 坑） |
 
 `docs/DECISIONS.md` 记录规则变更过程与裁决理由，**不是规则**，只在追溯历史时读。
 
@@ -38,7 +38,7 @@ generals/
 │   │   ├── config.py        # 常驻参数
 │   │   ├── game/            # ★ 纯内核：mapgen / state / commands / combat / rules / tick / view
 │   │   ├── net/             # 房间与连接：lobby / room / session / protocol
-│   │   ├── ai/              # AI 接口：api / registry / runner / builtin
+│   │   ├── ai/              # AI 接口：api / registry / loader（自动挂载）/ runner / builtin / remote_client
 │   │   └── transport/       # FastAPI 路由：http_routes / ws_routes
 │   ├── tests/               # pytest（内核规则单测 + 集成测）
 │   └── pyproject.toml
@@ -47,12 +47,13 @@ generals/
 │   ├── waiting.html         # 房间列表页
 │   ├── src/core/            # 纯逻辑：types / geometry / state / chains / client（不碰 DOM）
 │   ├── src/render/          # Canvas：palette / camera / icons / painter
-│   ├── src/ui/              # DOM：leaderboard / turn / chat
+│   ├── src/ui/              # DOM：leaderboard / turn / chat / autopilot（策略接管面板）
 │   ├── src/input/           # keyboard / pointer
 │   ├── src/main.ts          # ★ 前端唯一装配点
 │   ├── styles/              # palette.css（配色变量）/ game.css / waiting.css
 │   └── scripts/             # shot.mjs（截图）、e2e-page.mjs（真浏览器联调）
 ├── scripts/                 # dev.ps1 / test.ps1 / e2e_smoke.py
+├── ai/                      # ★ 策略目录：放 *.py 就自动挂载（新手从 sample_greedy.py 复制）
 └── SaveWeb/                 # 用户提供的原站存档与截图 = 视觉基准（只读，勿改）
 ```
 

@@ -25,6 +25,8 @@ __all__ = [
     "get",
     "register",
     "registered",
+    "snapshot",
+    "unregister",
 ]
 
 T = TypeVar("T", bound=type)
@@ -76,6 +78,27 @@ def all_names() -> list[str]:
 def registered(name: str) -> bool:
     """判断某策略名是否已注册。前置：无。后置：返回 bool。抛出：无。"""
     return (name or "").strip().lower() in _REGISTRY
+
+
+def snapshot() -> dict[str, type]:
+    """返回注册表的浅拷贝（`name -> 类对象`）。
+
+    前置：无。
+    后置：返回**新的** dict（修改它不影响注册表）；键已小写化。
+          供 `ai.loader` 对比「一个策略文件注册了哪些名字」。
+    抛出：无。
+    """
+    return dict(_REGISTRY)
+
+
+def unregister(name: str) -> bool:
+    """从注册表摘掉一个策略（**供 `ai.loader` 热重载使用**）。
+
+    前置：无。
+    后置：返回 `True` = 确实摘掉了；`False` = 本来就没有该名字（幂等）。
+    抛出：无。
+    """
+    return _REGISTRY.pop((name or "").strip().lower(), None) is not None
 
 
 def clear() -> None:
