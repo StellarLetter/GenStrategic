@@ -16,3 +16,7 @@ build/
 .DS_Store
 # 内部派工与临时产物，不入库
 .dispatch/
+
+# 个人策略不入库：ai/ 只发布示例策略
+ai/*.py
+!ai/sample_greedy.py

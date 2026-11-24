@@ -38,7 +38,7 @@ server/
   generals/transport/     FastAPI 适配（HTTP 路由 / WebSocket 端点）
   generals/app.py         唯一装配点
   tests/                  后端测试
-ai/                       策略目录：放 *.py 自动挂载（见 docs/AI_API.md）
+ai/                       策略目录：放 *.py 自动挂载（见 docs/AI_API.md）；个人策略不入库，仅 sample_greedy.py
 web/
   src/core/               纯逻辑：类型、几何、客户端状态、调兵链、连接
   src/render/             Canvas：调色板、摄像机、图标、绘制
