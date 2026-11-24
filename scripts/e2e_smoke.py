@@ -14,8 +14,11 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -82,6 +85,11 @@ async def run(port: int, ticks: int) -> int:
     url = f"ws://127.0.0.1:{port}/ws"
     failures: list[str] = []
 
+    # 回放目录指到临时目录：每局都会自动落一份回放（R8.1），不该把仓库的 replays/ 塞满。
+    replay_dir = tempfile.mkdtemp(prefix="generals-e2e-smoke-")
+    env = dict(os.environ)
+    env["GENERALS_REPLAY_DIR"] = replay_dir
+
     proc = subprocess.Popen(
         [
             str(PY),
@@ -98,6 +106,7 @@ async def run(port: int, ticks: int) -> int:
             "warning",
         ],
         cwd=str(ROOT),
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
     )
@@ -235,6 +244,7 @@ async def run(port: int, ticks: int) -> int:
         with contextlib.suppress(Exception):
             proc.terminate()
             proc.wait(timeout=5)
+        shutil.rmtree(replay_dir, ignore_errors=True)
 
     if failures:
         print("\n=== FAILURES ===")

@@ -8,10 +8,12 @@
 ```
 index.html            对局页入口
 waiting.html          房间列表页入口
+replay.html           回放页入口（?id=<id> 播放一局；不带 id 为最近对局列表）
 src/core/             纯逻辑（无 DOM、无 canvas，可单测）
   types.ts            线协议与游戏对象的类型定义
   geometry.ts         索引 ↔ (row, col)、4/8 邻、方向
   state.ts            ClientState + applyFrame（不可变帧应用）
+  replay.ts           回放文件解析 + ReplayCursor（按 Tick 重放/跳转）
   chains.ts           本地调兵链镜像（选择、比例、push/pop/clear）
   client.ts           WebSocket 连接（自动重连、心跳、发送队列）
 src/render/            Canvas 绘制
@@ -24,14 +26,20 @@ src/ui/               DOM 面板（全部是压在 canvas 上的浮动层）
   leaderboard.ts      ★ | Player | Army | Land（可折叠成「色块 + Army + Land」）
   chat.ts             聊天与系统消息（顶部一条窄拖动条，可收起成「聊天 ▸」小按钮）
   floating.ts         makeDraggable：面板拖动 + localStorage 位置记忆
+src/replay/           回放页（复用 render/ui，不重复实现绘制）
+  main.ts             回放页装配点：载入 → 游标重放 → 控制条/面板同步
+  controls.ts         播放/暂停、0.5×–16× 倍速、时间轴（按 Tick）、Tick/时长文本
+  ailog.ts            AI 调试流面板（按玩家/kind 筛、点条目跳到该刻）
+  chatlist.ts         只读聊天（可回溯，按内容指纹整体重建）
 src/input/            输入
   keyboard.ts         WASD / Q / E / ± / 方向键 / Enter
   pointer.ts          点击选中、点击调兵、拖拽平移、滚轮缩放（把光标坐标传给上层当锚点）
 src/main.ts           唯一装配点（把上面四层接起来）
-styles/               palette.css（CSS 变量）+ game.css + waiting.css
+styles/               palette.css（CSS 变量）+ game.css + waiting.css + replay.css
 public/fonts/         Quicksand 500/700（与原站一致的几何无衬线数字）
 scripts/shot.mjs      playwright-core + 本机 Edge 截图
 scripts/e2e-page.mjs  真浏览器 × 真后端联调（两个页面开局 + 断言 + 拖动记忆 + 交互细节 + 截图）
+scripts/e2e-replay.mjs 回放页联调（列表、播放、跳转、AI 流筛选与跳条、倍速、键盘单步 + 截图）
 ```
 
 ## 布局：全屏地图 + 五个浮动面板
@@ -175,6 +183,22 @@ row = (sy - height/2) / cell + cy      →  cy' = row - (sy - height/2) / cell'
 | `/?demo=1` | 默认演示局（选中格比例 100%，不显示比例文字） |
 | `/?demo=1&demoRatio=0.5` | 选中格比例为 50%，用于截「选中格比例文字」（R6.6） |
 
+## 回放页（`replay.html`）
+
+对局页顶部的「回放」按钮打开列表；`?id=<id>` 直接播一局。见 `docs/REPLAY.md`。
+
+- **重放方式**：回放的 `frames` 与线协议同构（每帧多一个 `tick`），所以播放器就是把帧按序
+  喂给 `core/state.ts::applyFrame` —— 与对局页共用同一套状态机与绘制代码，没有专用解码器。
+- **`ReplayCursor`**：`seek(tick)` 往前只增量应用，往回则从空状态重放（保证任意跳转的结果与
+  逐帧播放完全一致）；`maxTick` 取 `result.tick` 与最后一帧 `tick` 的较大者。
+- **播放**：`requestAnimationFrame` 驱动，每秒推进 `1000 / tickMs * speed` 个 Tick；
+  播到最后一刻自动停在终点。`空格` 播放/暂停，`←/→` 单步、`Shift+←/→` 十步。
+- **AI 调试流**（`src/replay/ailog.ts`）：按玩家下拉框、按 `kind`（日志/动作/异常/被拒/作废）
+  切换筛选；点条目跳到该条目的 Tick 并继续播放；播放时高亮当前刻的条目。
+- **只读面板**：排行榜、回合、聊天都复用 `ui/` 的实现；聊天因为要**回溯**，改用
+  `chatlist.ts` 按内容指纹整体重建（对局页的增量追加在往回拖时会错乱）。
+- 列表模式（无 `?id=`）隐藏播放相关面板，显示最近 200 份回放（时间/房间/玩家与策略/回合/结果/帧数/AI 条目/大小）。
+
 ## 命令
 
 ```powershell
@@ -184,6 +208,7 @@ pnpm build               # → web/dist，由后端静态托管
 node scripts/shot.mjs "http://127.0.0.1:5173/?demo=1" out.png 1600 900 1500
 node scripts/shot.mjs "http://127.0.0.1:5173/?demo=1&demoRatio=0.5" ratio.png 1600 900 1500
 node scripts/e2e-page.mjs http://127.0.0.1:8000 out.png 5000
+node scripts/e2e-replay.mjs http://127.0.0.1:8124 <replayId> out.png   # 回放页（用 scripts/e2e_replay.py 起服务）
 ```
 
 > 截图脚本用 `playwright-core` + 本机 Edge（`channel: 'msedge'`），必须在 `web/` 目录下执行。
@@ -213,3 +238,10 @@ node scripts/e2e-page.mjs http://127.0.0.1:8000 out.png 5000
 
 自动化脚本据此拿到真实几何（视野可能只有两三格，从像素反推格边长会得出荒谬数字），
 不改变任何游戏状态。
+
+回放页另有两组（只在 `/replay.html` 上存在）：
+
+| 钩子 | 含义 |
+| --- | --- |
+| `window.__replayDebug()` | `{id, tick, maxTick, playing, size, cell, origin, turn, frames, ai, chat, players, aiRows}` |
+| `window.__replaySeek(tick)` / `window.__replayPlay(bool)` | 跳转 / 播放暂停（e2e 用来验证游标与播放推进） |
