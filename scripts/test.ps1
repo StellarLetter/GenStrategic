@@ -1,4 +1,4 @@
-# 全量校验（PowerShell）。用法：  .\scripts\test.ps1
+﻿# 全量校验（PowerShell）。用法：  .\scripts\test.ps1
 # 依次执行：后端 pytest → 前端类型检查 → 前端构建 → 协议级端到端 → 回放页面端到端
 param(
     [switch]$SkipE2E
