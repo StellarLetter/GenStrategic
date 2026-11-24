@@ -30,7 +30,7 @@ cd web; pnpm dev                                              # 前端 :5173，/
 
 ```
 AGENT.md                  上手指南（先读这个）
-docs/                     规则 / 架构 / 契约 / 线协议 / AI 接口
+docs/                     规则 / 架构 / 契约 / 线协议 / AI 接口 / 策略说明
 server/
   generals/game/          纯内核：状态、Tick 结算、战斗、指令、地图生成、视野投影
   generals/net/           房间、连接、席位、协议编解码、大厅
@@ -39,6 +39,7 @@ server/
   generals/app.py         唯一装配点
   tests/                  后端测试
 ai/                       策略目录：放 *.py 自动挂载（见 docs/AI_API.md）；个人策略不入库，仅 sample_greedy.py
+tools/                    离线工具：ai_arena.py（策略对战基准）
 web/
   src/core/               纯逻辑：类型、几何、客户端状态、调兵链、连接
   src/render/             Canvas：调色板、摄像机、图标、绘制
@@ -47,6 +48,22 @@ web/
   src/main.ts             唯一装配点
 scripts/                  一键脚本 + 端到端冒烟
 ```
+
+## 1v1 策略
+
+`ai/aegis.py` 是一份自包含的 1v1 策略（自动挂载，注册名 `aegis`）：**广占土地攒经济、单股主力朝
+对手王城汇聚、抵近斩首**。设计推演、决策流水线与参数说明见
+[`docs/STRATEGY_AEGIS.md`](docs/STRATEGY_AEGIS.md)。
+
+离线对战基准（真实内核 + 真人与 AI 共用的校验路径，双座位各打一遍、逐局统计胜负与回合数）：
+
+```powershell
+.\.venv\Scripts\python.exe tools\ai_arena.py --a aegis --b greedy,sample-greedy --games 30 --swap
+.\.venv\Scripts\python.exe tools\ai_arena.py --a aegis --b cosmos-apex --games 30 --seed0 3000 --swap --max-ticks 1400
+```
+
+> 按 `ai/README.md` 的发布约定，`ai/*.py` 不入库（仅 `sample_greedy.py` 例外），
+> 因此策略文件留在本机、随本机运行；`tools/ai_arena.py` 与策略说明文档入库。
 
 ## 实现状态
 

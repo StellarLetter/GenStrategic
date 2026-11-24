@@ -5,6 +5,9 @@ Web 界面的「策略」下拉框里立刻能看到它，可直接让某个玩�
 
 - 编写方法：见 [`docs/AI_API.md`](../docs/AI_API.md)（只读这一份就能写完一个策略）。
 - 现成模板：`sample_greedy.py`（复制改名即可）。
+- 本机另有一份完整的 1v1 攻坚策略 `aegis.py`（按下面的发布约定**不入库**），
+  设计说明见 [`docs/STRATEGY_AEGIS.md`](../docs/STRATEGY_AEGIS.md)，
+  离线对战基准见 `tools/ai_arena.py`。
 - 重载：改完文件不必重启服务，调用 `POST /api/ai/reload`，或刷新页面时点「刷新策略」。
 - 加载失败的文件不会影响服务器与其它策略：错误会显示在界面的策略面板与
   `GET /api/ai/strategies` 的 `errors` 字段里。
