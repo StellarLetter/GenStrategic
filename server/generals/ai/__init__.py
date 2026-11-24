@@ -4,6 +4,7 @@
 
 导出：
 - `Observation` / `Action` / `GameSpec` / `Row` / `Agent`：AI 接口数据结构与协议
+- `RATIOS`：AI 可用的调兵比例集合（10%..100%，与真人一致，R6.6）
 - `to_observation`：把一个 `GameState` 裁剪成某玩家视角的观测（内部调 `game.view.project`）
 - `register` / `get` / `all_names`：策略注册表
 - `AIRunner` / `make_agent`：把策略挂到房间座位上
@@ -14,7 +15,16 @@
 from __future__ import annotations
 
 from . import builtin, registry
-from .api import Action, Agent, GameSpec, Observation, Row, to_observation, to_observation_for
+from .api import (
+    RATIOS,
+    Action,
+    Agent,
+    GameSpec,
+    Observation,
+    Row,
+    to_observation,
+    to_observation_for,
+)
 from .builtin import Greedy, Hold, Random, neighbours4
 from .registry import all_names, get, register, registered
 from .remote_client import RemoteAgent
@@ -28,6 +38,7 @@ __all__ = [
     "Greedy",
     "Hold",
     "Observation",
+    "RATIOS",
     "Random",
     "RemoteAgent",
     "Row",

@@ -17,6 +17,8 @@ import json
 import math
 from typing import Any, Final
 
+from generals.game.commands import quantize_ratio
+
 __all__ = [
     "COLORS",
     "CLIENT_FRAME_TYPES",
@@ -178,11 +180,12 @@ def _as_dir(value: Any) -> str:
 
 
 def _as_ratio(value: Any, *, default: float = 1.0) -> float:
-    """比例规范化：缺失 => `default`；非数或非有限值 => `bad_frame`；越界 => 钳到 `[0.1, 1.0]`。
+    """比例规范化：缺失 => `default`；非数或非有限值 => `bad_frame`；其余量化到 10% 整数倍。
 
-    规则依据：R6.6 规定比例范围 10%–100%（`+`/`-` 步长 10%）。
-    比例只影响调兵量、不影响请求合法性，因此越界按边界取值而不拒绝整条指令；
-    调兵量本身在发起调兵阶段才计算（R6.7 / R7.2）。
+    规则依据：R6.6 规定比例只取 10% 的整数倍（10%–100%，`+`/`-` 步长 10%）。
+    量化用内核的 :func:`generals.game.commands.quantize_ratio`（就近取整），
+    这样**线协议、前端与 AI 共用同一比例集合**，AI 无法调出真人无法选择的比例
+    （AI_API.md §1.2）。比例不影响请求合法性、只影响调兵量，因此量化而不拒绝整条指令。
     """
     if value is None:
         return default
@@ -191,11 +194,8 @@ def _as_ratio(value: Any, *, default: float = 1.0) -> float:
     ratio = float(value)
     if not math.isfinite(ratio):
         raise ProtocolError("bad_frame", "ratio must be finite")
-    # PROTOCOL.md §2.4 的 `ratio` 取值区间为 [0.1, 1.0]（R6.6）。这里按边界钳制，
-    # 不因为越界而拒绝整条指令（比例本身不影响合法性，只影响调兵量）。
-    if ratio <= 0.1:
-        return 0.1
-    return min(ratio, 1.0)
+    # R6.6：比例只取 10% 的整数倍；越界与小数比例一律就近量化（不拒绝整条指令）。
+    return quantize_ratio(ratio)
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,7 @@ import pytest
 from helpers_kernel import make_state, make_tile
 from generals.game import (
     CHAIN_LIMIT,
+    RATIOS,
     CommandError,
     Dir,
     MoveRequest,
@@ -16,6 +17,7 @@ from generals.game import (
     enqueue_move,
     launched_amount,
     pop_chain,
+    quantize_ratio,
     tick,
 )
 
@@ -159,6 +161,21 @@ def test_ratio_is_clamped_into_open_unit_interval_r6_6() -> None:
     assert all(0.0 < r <= 1.0 for r in ratios)
 
 
+def test_ratio_quantized_to_ten_percent_steps_r6_6() -> None:
+    """R6.6：比例只取 10% 的整数倍，真人与 AI 共用同一集合 `RATIOS`。"""
+    assert RATIOS == (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+    cases = [(0.37, 0.4), (0.44, 0.4), (0.45, 0.5), (0.95, 1.0), (0.04, 0.1), (7.0, 1.0)]
+    for raw, expected in cases:
+        assert quantize_ratio(raw) == expected
+    state = make_state(size=5, players=(0, 1))
+    cap = state.players[0].capital
+    assert cap is not None
+    enqueue_move(state, 0, cap, Dir.RIGHT, 0.37)
+    enqueue_move(state, 0, cap, Dir.RIGHT, 0.44)
+    assert [req.ratio for req in state.players[0].chain] == [0.4, 0.4]
+    assert all(req.ratio in RATIOS for req in state.players[0].chain)
+
+
 # ---------------------------------------------------------------------------
 # R4.1 / R4.9 与 PROTOCOL §5 —— 校验与错误码
 # ---------------------------------------------------------------------------
@@ -292,7 +309,7 @@ def test_pop_chain_removes_latest_r6_4() -> None:
     enqueue_move(state, 0, cap, Dir.DOWN, 0.75)
     popped = pop_chain(state, 0)
     assert popped is not None
-    assert popped.dir is Dir.DOWN and popped.ratio == 0.75
+    assert popped.dir is Dir.DOWN and popped.ratio == 0.8  # 0.75 就近量化到 10% 整数倍
     assert len(state.players[0].chain) == 1
     _ = pop_chain(state, 0)
     assert pop_chain(state, 0) is None

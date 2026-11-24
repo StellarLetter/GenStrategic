@@ -92,6 +92,8 @@ DEFAULT_RATIO: float = 1.0
 #: 调兵比例下界 / 上界（R6.6：10%–100%，`+`/`-` 步长 10%）。
 RATIO_MIN: float = 0.1
 RATIO_MAX: float = 1.0
+#: 调兵比例步长（R6.6：比例只取 10% 的整数倍，真人与 AI 共用同一集合）。
+RATIO_STEP: float = 0.1
 
 # ---------------------------------------------------------------------------
 # 房间（net 层读取；内核不依赖）
@@ -180,6 +182,9 @@ __all__ = [
     "INHERIT_MIN_ARMY",
     "CHAIN_LIMIT",
     "DEFAULT_RATIO",
+    "RATIO_MIN",
+    "RATIO_MAX",
+    "RATIO_STEP",
     "ROOM_MAX_CONNECTIONS",
     "ROOM_IDLE_END_TICKS",
     "COLORS",

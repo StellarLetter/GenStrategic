@@ -118,8 +118,8 @@ def test_validate_commands_drops_unknown_op() -> None:
     assert out == [{"op": "pop"}]
 
 
-def test_validate_commands_ratio_clamped_to_unit_interval() -> None:
-    """PROTOCOL.md §2.4：`ratio: float(0..1]` → 越界钳制；0 视为极小正数。"""
+def test_validate_commands_ratio_quantized_to_ten_percent_steps() -> None:
+    """PROTOCOL.md §2.4 / R6.6：比例只取 10% 的整数倍；越界与任意小数就近量化。"""
     out = protocol.validate_commands(
         {"t": "commands", "cmds": [{"op": "move", "from": 1, "dir": "down", "ratio": 9.0}]}
     )
@@ -127,7 +127,18 @@ def test_validate_commands_ratio_clamped_to_unit_interval() -> None:
     out0 = protocol.validate_commands(
         {"t": "commands", "cmds": [{"op": "move", "from": 1, "dir": "down", "ratio": 0}]}
     )
-    assert 0.0 < out0[0]["ratio"] <= 1.0
+    assert out0[0]["ratio"] == 0.1
+    raw = protocol.validate_commands(
+        {"t": "commands", "cmds": [{"op": "move", "from": 1, "dir": "up", "ratio": 0.37}]}
+    )
+    assert raw[0]["ratio"] == 0.4
+    assert all(
+        protocol.validate_commands(
+            {"t": "commands", "cmds": [{"op": "move", "from": 1, "dir": "up", "ratio": r}]}
+        )[0]["ratio"]
+        in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+        for r in (0.01, 0.15, 0.9499, 0.9501, 1.5)
+    )
 
 
 def test_validate_commands_ratio_nan_is_bad_frame() -> None:

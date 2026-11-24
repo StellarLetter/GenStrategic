@@ -18,6 +18,7 @@ import pytest
 from conftest import FakeConn, pump, two_player_room
 from generals.ai import (
     AIRunner,
+    RATIOS,
     Action,
     GameSpec,
     Observation,
@@ -163,6 +164,20 @@ def test_action_to_command_matches_protocol_fields() -> None:
         Action(op="nope").to_command()  # type: ignore[arg-type]
 
 
+def test_action_ratio_is_limited_to_human_choices_r6_6() -> None:
+    """AI 的比例调兵动作只能落在真人可选的 10% 整数倍上（R6.6 / AI_API.md §1.2）。"""
+    assert RATIOS == (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0)
+    assert Action(op="move", src=12, dir="up", ratio=0.37).to_command()["ratio"] == 0.4
+    assert Action(op="move", src=12, dir="up", ratio=0.95).to_command()["ratio"] == 1.0
+    assert Action(op="move", src=12, dir="up", ratio=0.04).to_command()["ratio"] == 0.1
+    assert all(
+        Action(op="move", src=12, dir="up", ratio=r).to_command()["ratio"] in RATIOS
+        for r in (0.1, 0.2, 0.33, 0.66, 0.9, 1.0, 5.0, -1.0)
+    )
+    with pytest.raises(ValueError):
+        Action(op="move", src=12, dir="up", ratio=float("nan")).to_command()
+
+
 # ---------------------------------------------------------------------------
 # greedy（AI_API.md §2 示例 / §4）
 # ---------------------------------------------------------------------------
@@ -181,7 +196,7 @@ def _assert_legal_move(room, player_id: int, action: Action) -> None:
     idx = neighbours4(src, state.size).get(action.dir)
     assert idx is not None and idx in nbs
     assert state.tiles[idx].terrain.value != 2, "R4.9：不可向山地调兵"
-    assert 0 < action.ratio <= 1.0
+    assert action.ratio in RATIOS, "R6.6：AI 比例必须是真人可选值"
 
 
 def test_greedy_returns_legal_action_on_real_kernel_state() -> None:

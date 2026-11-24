@@ -22,7 +22,7 @@ import math
 import random
 from typing import Any, Final
 
-from .api import Action, GameSpec, Observation
+from .api import RATIOS, Action, GameSpec, Observation
 from .registry import register
 
 __all__ = [
@@ -137,7 +137,8 @@ class Random:
     """`random`：合法随机（**仅用于测试**，AI_API.md §4）。
 
     前置：`seed` 由构造方显式给出（默认 0），保证可复现（AI_API.md §4 注）。
-    后置：`act()` 在「可行动作」里等概率选一个；无可行动作时返回 `None`。
+    后置：`act()` 在「可行动作」里等概率选一个（含**比例调兵**：从 `RATIOS` 里等概率取
+          10%..100%），因此也用于验证 AI 与真人的调兵动作空间完全一致（R6.6）。
     抛出：`TypeError` —— `seed` 不是 int（编程错误）。
     """
 
@@ -152,7 +153,7 @@ class Random:
         self.size = spec.size
 
     def act(self, obs: Observation) -> Action | None:
-        """在合法 `move` 中随机挑一条。前置/后置：同上。抛出：无。"""
+        """在合法 `move` 中随机挑一条，比例从 `RATIOS` 随机取。前置/后置：同上。抛出：无。"""
         options: list[Action] = []
         for tile in obs.tiles:
             if tile.owner != obs.me:
@@ -167,7 +168,9 @@ class Random:
                 options.append(Action(op="move", src=tile.index, dir=direction, ratio=1.0))
         if not options:
             return None
-        return options[self._rng.randrange(len(options))]
+        pick = options[self._rng.randrange(len(options))]
+        ratio = RATIOS[self._rng.randrange(len(RATIOS))]
+        return Action(op="move", src=pick.src, dir=pick.dir, ratio=ratio)
 
 
 def _ceilmul(army: int, ratio: float) -> int:  # pragma: no cover - 工具函数，供策略参考

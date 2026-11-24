@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal, Protocol, runtime_checkable
 
+from generals.game.commands import RATIOS, CommandError, quantize_ratio
 from generals.game.state import GameState, turn_of
 from generals.game.view import TileView, project
 
@@ -19,6 +20,7 @@ __all__ = [
     "Agent",
     "GameSpec",
     "Observation",
+    "RATIOS",
     "Row",
     "to_observation",
     "to_observation_for",
@@ -100,7 +102,8 @@ class Observation:
 class Action:
     """AI 的输出（AI_API.md §1.2）。
 
-    - `move`：`src`、`dir ∈ {up,down,left,right}`、`ratio ∈ (0,1]`
+    - `move`：`src`、`dir ∈ {up,down,left,right}`、`ratio ∈ RATIOS`
+      （`RATIOS` = 10%、20%、…、100%，与真人可选的比例**完全一致**；R6.6）
     - `clear` / `pop`：无字段
     - `select`：`tile`
 
@@ -116,12 +119,21 @@ class Action:
     def to_command(self) -> dict:
         """转成 `protocol.validate_commands` 接受的指令 dict（PROTOCOL.md §2.4）。
 
+        `move` 的比例经 `generals.game.commands.quantize_ratio` **就近取整到 10% 的整数倍**
+        （例如 37% → 40%）：AI 因此不可能调出真人无法选择的比例（R6.6 / AI_API.md §1.2）。
+        量化后仍会在线协议与内核入队两处幂等地再校验一次。
+
         前置：无。
         后置：返回 `{"op": ...}` 形式的纯 dict，字段与线协议一致。
-        抛出：`ValueError` —— `op` 不在 `{move, clear, pop, select}`（属于策略实现的 bug）。
+        抛出：`ValueError` —— `op` 不在 `{move, clear, pop, select}`，或 `move` 的比例不是
+              有限数值（都属于策略实现的 bug）。
         """
         if self.op == "move":
-            return {"op": "move", "from": int(self.src), "dir": str(self.dir), "ratio": float(self.ratio)}
+            try:
+                ratio = quantize_ratio(self.ratio)
+            except CommandError as exc:
+                raise ValueError(f"invalid move ratio: {self.ratio!r}") from exc
+            return {"op": "move", "from": int(self.src), "dir": str(self.dir), "ratio": ratio}
         if self.op == "select":
             return {"op": "select", "tile": int(self.tile)}
         if self.op in ("clear", "pop"):

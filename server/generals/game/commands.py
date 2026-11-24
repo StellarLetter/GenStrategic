@@ -7,15 +7,26 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
+from .. import config
 from .state import GameState, PlayerState, Terrain
 
 # 与 config 同源，避免两处硬编码漂移（R4.7 / R6.6 / INTERFACES §1.3）。
-CHAIN_LIMIT: int = 20
-RATIO_MIN: float = 0.1
-RATIO_MAX: float = 1.0
+CHAIN_LIMIT: int = config.CHAIN_LIMIT
+RATIO_MIN: float = config.RATIO_MIN
+RATIO_MAX: float = config.RATIO_MAX
+RATIO_STEP: float = config.RATIO_STEP
+
+#: 真人与 AI 共享的**唯一**比例集合（R6.6）：10%、20%、…、100%。
+#: 任何来源（前端输入、线协议、AI `Action`）的比例都会被 :func:`quantize_ratio`
+#: 量化到本集合，因此 AI 不可能调出真人无法选择的比例。
+RATIOS: tuple[float, ...] = tuple(
+    round(RATIO_MIN + i * RATIO_STEP, 1)
+    for i in range(round((RATIO_MAX - RATIO_MIN) / RATIO_STEP) + 1)
+)
 
 
 class Dir(Enum):
@@ -76,7 +87,7 @@ class MoveRequest:
 
     - ``src``：起点地块 index。
     - ``dir``：方向（4 相邻）。
-    - ``ratio``：**入队时**的比例，``(0, 1]``（R6.7）。
+    - ``ratio``：**入队时**的比例，为 ``RATIOS`` 之一（10%..100%，步长 10%）（R6.6 / R6.7）。
     """
 
     src: int
@@ -120,13 +131,17 @@ def _coerce_dir(direction: Dir | str) -> Dir:
         raise CommandError("bad_frame", f"非法方向：{direction!r}") from exc
 
 
-def _coerce_ratio(ratio: float) -> float:
-    """把比例 clamp 到 ``[RATIO_MIN, RATIO_MAX]`` = ``[0.1, 1.0]``（R6.6）。
+def quantize_ratio(ratio: float) -> float:
+    """把任意比例量化到**真人可选集合** ``RATIOS`` = ``{10%, 20%, …, 100%}``（R6.6 / R6.7）。
 
-    比例只有这一个取值范围（UI 的 `+`/`-` 步长 10% 也落在这个区间内），
-    越界输入按边界取值而不报错，保证结算确定。
+    规则：先 clamp 到 ``[RATIO_MIN, RATIO_MAX]``，再**就近取整**到 10% 的整数倍
+    （正好 5% 的中点向上取整，例如 15% → 20%、95% → 100%）。
+    这是所有来源（前端、线协议、AI `Action`）共用的唯一入口：AI 因此不可能
+    调出真人无法选择的比例（AI_API.md §1.2）。
 
-    抛出：``CommandError('bad_frame')`` —— ``ratio`` 不是有限数值。
+    前置：``ratio`` 是有限数值。
+    后置：返回值 ∈ ``RATIOS``（10 个离散值之一），不做"是否作废"的判定。
+    抛出：``CommandError('bad_frame')`` —— ``ratio`` 不是有限数值（NaN / ±inf / 非数值）。
     """
     try:
         value = float(ratio)
@@ -134,11 +149,10 @@ def _coerce_ratio(ratio: float) -> float:
         raise CommandError("bad_frame", f"非法比例：{ratio!r}") from exc
     if value != value or value in (float("inf"), float("-inf")):  # NaN / ±inf
         raise CommandError("bad_frame", f"非法比例：{ratio!r}")
-    if value > RATIO_MAX:
-        return RATIO_MAX
-    if value < RATIO_MIN:
-        return RATIO_MIN
-    return value
+    # 用整数百分比做量化，避免 0.3 / 0.7 等十进制小数的浮点误差。
+    percent = min(100, max(1, int(math.floor(value * 100 + 0.5))))
+    percent = min(100, max(10, int(math.floor(percent / 10 + 0.5)) * 10))
+    return RATIOS[percent // 10 - 1]
 
 
 def _require_player(state: GameState, player_id: int) -> PlayerState:
@@ -171,7 +185,7 @@ def enqueue_move(
       * 目标地块**真实**地形非山地（R4.9）→ ``blocked``；
       * 调兵链长度 < ``CHAIN_LIMIT`` → ``chain_full``（R4.7 / R6.11）。
     后置：``state.players[player_id].chain`` 末尾追加一条 :class:`MoveRequest`；
-          ``ratio`` 已 clamp 到 ``(0, 1]``（R6.7）。
+          ``ratio`` 已按 :func:`quantize_ratio` 量化到 10% 的整数倍（10%..100%，R6.6）。
     抛出：:class:`CommandError`，``code`` ∈
           ``{not_started, not_joined, not_your_turn, bad_frame, not_adjacent, blocked, chain_full}``。
           **不产生 ``not_owned``**（R4.11：入队不校验起点归属）。
@@ -199,7 +213,7 @@ def enqueue_move(
     if len(player.chain) >= CHAIN_LIMIT:
         raise CommandError("chain_full")
 
-    player.chain.append(MoveRequest(src=src, dir=d, ratio=_coerce_ratio(ratio)))
+    player.chain.append(MoveRequest(src=src, dir=d, ratio=quantize_ratio(ratio)))
 
 
 def clear_chain(state: GameState, player_id: int) -> int:
@@ -244,7 +258,7 @@ def launched_amount(army: int, ratio: float) -> int:
 
     公式：``min(ceil(army * ratio), army - 1)``，再夹到 ``>= 0``。
 
-    前置：``army >= 0``（地块兵力恒非负，R3.9）；``ratio`` 任意，非 ``(0, 1]`` 时内部 clamp。
+    前置：``army >= 0``（地块兵力恒非负，R3.9）；``ratio`` 任意，非 ``(0, 1]`` 时内部量化。
     后置：返回**原始计算值**，可能为 ``0``（``army <= 1`` 时必然为 ``0``）；
           **不做"是否作废"的判定** —— ``<= 0`` 的语义由调用方按 R4.12 处理
           （见 :func:`generals.game.tick.launch_moves`：``<= 0`` ⇒ ``reason="zero_army"`` 作废）。
@@ -252,7 +266,7 @@ def launched_amount(army: int, ratio: float) -> int:
     """
     if army <= 0:
         return 0
-    r = ratio if 0.0 < ratio <= 1.0 else _coerce_ratio(ratio)
+    r = ratio if 0.0 < ratio <= 1.0 else quantize_ratio(ratio)
     # ceil(army * r)：用整数运算避免浮点误差导致的向上取整漂移。
     scaled = army * r
     n = int(scaled)
@@ -267,6 +281,11 @@ __all__ = [
     "MoveRequest",
     "CommandError",
     "CHAIN_LIMIT",
+    "RATIO_MIN",
+    "RATIO_MAX",
+    "RATIO_STEP",
+    "RATIOS",
+    "quantize_ratio",
     "dir_of",
     "enqueue_move",
     "clear_chain",
