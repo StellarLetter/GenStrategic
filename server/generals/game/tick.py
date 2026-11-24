@@ -272,7 +272,6 @@ def launch_moves(
 def _apply_dst_result(
     state: GameState,
     dst: int,
-    arrivals: list[Flight],
     result: BattleResult,
     captures: list[CaptureEvent],
     changed: set[int],
@@ -280,32 +279,46 @@ def _apply_dst_result(
     """把一块地的阵地战结果落到权威状态上（阶段 4 判定 + 阶段 5 更新占领）。
 
     规则映射：
-      * 无战斗（参战 owner ≤ 1）→ 累加（R4.6）；若 dst 中立空地（无驻军）则到达方占领（R4.4）。
+      * 无战斗（参战 owner ≤ 1）且到达方**就是** dst 的控制者 → 累加（R4.6）；
+      * 无战斗且到达方**不是** dst 的控制者 → 到达方占领（R4.4）。这里包含两种地块：
+        中立空地（``owner is None, army == 0``）与**敌方 0 兵力地块**——后者守军为 0
+        故不入 :func:`resolve_battle` 的参战集合，同属"无战斗"，但控制权必须转移。
       * 并列最大 → 兵力归零、**不占领**，原控制者（或中立）保留（R4.3）。
       * 中立驻军独大 → 地块仍中立，兵力 = 剩余兵力（R3.8 / R4.3）。
       * 玩家独大 → 剩余兵力 > 0 即攻占（R4.4）；攻占他人王城触发全继承（R5.2）与
         王城转"首都转化型城市"（R5.4）。
+
+    前置：``dst`` 是本刻有航班到达的地块；``result`` 由 :func:`resolve_battle` 对
+          ``dst`` 算出，且 ``result.tile == dst``。
+    后置：改写 ``state.tiles[dst]``（必要时连带 R5.2 全继承），并把变化记入
+          ``captures`` / ``changed``。
+    抛出：无（``apply_capture`` 的前置由本函数保证）。
     """
     dst_tile = state.tiles[dst]
     participants = result.participants
 
     if not result.fought:
-        # --- 无战斗：单一 owner 的累加（R4.6）----------------------
+        # --- 无战斗：只剩一个 owner 在场（R4.3 的判定前提不成立）---------------
         if result.remaining <= 0:
             return
-        if dst_tile.owner is None:
-            # 中立空地（army == 0）且只有 1 方到达 → 该方占领（R4.4）。
-            arriving_owner = arrivals[0].owner if arrivals else participants[0].owner
-            ev, extra = apply_capture(state, dst, arriving_owner, result.remaining)
-            captures.append(ev)
-            captures.extend(extra)
-            for item in extra:
-                changed.add(item.tile)
-            changed.add(dst)
-        else:
-            # 友方/自己地块：累加（R4.6）。
+        # 单方在场：participants 恰有 1 项，``remaining`` 即该方到达总量（R4.6）。
+        sole_owner = participants[0].owner
+        if sole_owner == NEUTRAL_OWNER:
+            # 防御：中立驻军单独在场（无任何到达方）不改变地块。
+            return
+        if dst_tile.owner == sole_owner:
+            # 己方/友方地块：累加（R4.6，不设上限）。
             dst_tile.army += result.remaining
             changed.add(dst)
+            return
+        # 到达方并非 dst 的控制者 → 到达兵力 > 0 即占领（R4.4）；
+        # **绝不可**把到达兵力累加给原控制者（R4.4："占领后兵力 = 剩余兵力，不与原驻军累加"）。
+        ev, extra = apply_capture(state, dst, sole_owner, result.remaining)
+        captures.append(ev)
+        captures.extend(extra)
+        for item in extra:
+            changed.add(item.tile)
+        changed.add(dst)
         return
 
     if result.winner is None:
@@ -410,7 +423,7 @@ def step(state: GameState) -> TickReport:
         arrivals = arrivals_by_dst[dst]
         result = resolve_battle(arrivals, state.tiles[dst], tile_index=dst)
         battles.append(result)
-        _apply_dst_result(state, dst, arrivals, result, captures, changed)
+        _apply_dst_result(state, dst, result, captures, changed)
 
     # ---- 阶段 6：停止抵抗（R5.3 / R5.5）----------------------------------
     expired = tick_surrender(state)

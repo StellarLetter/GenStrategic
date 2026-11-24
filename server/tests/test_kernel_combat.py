@@ -300,6 +300,107 @@ def test_capture_zeroes_defender_visible_army_r4_10() -> None:
     assert state.land_count(1) >= 0
 
 
+# ---------------------------------------------------------------------------
+# R4.4 —— 攻打「敌方 0 兵力地块」必须换控制权，不能把到达兵力叠加给对方
+# ---------------------------------------------------------------------------
+
+
+def test_capture_enemy_zero_army_tile_r4_4() -> None:
+    """敌方地块兵力 0 → 守军不参战（无战斗），到达方仍**占领**它（R4.4）。
+
+    回归：旧实现把"无战斗 + dst 已有控制者"一律当成 R4.6 累加，
+    于是到达兵力被**叠给原控制者**，控制权毫无变化。
+    """
+    state = make_state(size=5, players=(0, 1))
+    a = state.index(2, 0)
+    b = state.index(2, 1)
+    state.tiles[a] = make_tile(Terrain.PLAIN, army=21, owner=0)
+    state.tiles[b] = make_tile(Terrain.PLAIN, army=0, owner=1)  # 敌方 0 兵力地块
+    state.players[0].capital = a
+    state.players[1].capital = b
+    for idx in range(state.tile_count):
+        if idx not in (a, b):
+            state.tiles[idx] = make_tile(Terrain.PLAIN, army=0, owner=None)
+    state.tick = 1  # 下一 step = tick 2（Turn 1，不增长）
+
+    enqueue_move(state, 0, a, Dir.RIGHT, 1.0)  # ceil(21*1)=21，cap 20 → 20
+    report = tick.step(state)
+
+    assert state.tiles[b].owner == 0, "到达兵力 > 0 必须夺取控制权（R4.4）"
+    assert state.tiles[b].army == 20, "占领后兵力 = 结算剩余兵力，不叠加原驻军（R4.4）"
+    assert state.tiles[a].owner == 0 and state.tiles[a].army == 1
+    # 战斗记录：无战斗（守军 0 不参战），但攻占事件必须下发。
+    battle = next(r for r in report.battles if r.tile == b)
+    assert battle.fought is False
+    assert battle.previous_owner == 1 and battle.previous_army == 0
+    assert [(c.tile, c.previous_owner, c.new_owner, c.amount) for c in report.captures] == [
+        (b, 1, 0, 20)
+    ]
+    assert b in report.changed
+
+
+def test_repeated_attack_after_tie_captures_zero_army_tile_r4_3_r4_4() -> None:
+    """R4.3 平局把守军打到 0 兵后，下一刻再攻必须占领（这是"有概率"的真实触发路径）。"""
+    state = make_state(size=5, players=(0, 1))
+    a = state.index(2, 0)
+    b = state.index(2, 1)
+    state.tiles[a] = make_tile(Terrain.PLAIN, army=6, owner=0)
+    state.tiles[b] = make_tile(Terrain.PLAIN, army=5, owner=1)
+    state.players[0].capital = a
+    state.players[1].capital = b
+    for idx in range(state.tile_count):
+        if idx not in (a, b):
+            state.tiles[idx] = make_tile(Terrain.PLAIN, army=0, owner=None)
+    state.tick = 1  # 下一 step = tick 2（Turn 1，不增长）
+
+    enqueue_move(state, 0, a, Dir.RIGHT, 1.0)  # 到达 5
+    tick.step(state)
+
+    # 第一刻：5 对 5 平局 → 双方归零、不占领（R4.3）；b 仍是 1 号、0 兵。
+    assert state.tiles[b].owner == 1
+    assert state.tiles[b].army == 0
+    assert state.tiles[a].army == 1
+
+    # 第二刻：从 a 再攻一次（手工补兵，模拟后方增援），b 守军为 0。
+    state.tiles[a].army = 5
+    state.tick = 3  # 下一 step = tick 4（Turn 2，不增长）
+    enqueue_move(state, 0, a, Dir.RIGHT, 1.0)  # 到达 4
+    tick.step(state)
+
+    assert state.tiles[b].owner == 0
+    assert state.tiles[b].army == 4
+
+
+def test_capture_zero_army_enemy_capital_inherits_r4_4_r5_2() -> None:
+    """敌方王城守军为 0 时也必须走攻占路径：转手 + 触发全继承（R4.4 / R5.2 / R5.4）。"""
+    state = make_state(size=5, players=(0, 1))
+    a = state.index(2, 0)
+    b = state.index(2, 1)
+    c = state.index(0, 0)
+    state.tiles[a] = make_tile(Terrain.PLAIN, army=7, owner=0)
+    state.tiles[b] = make_tile(Terrain.CAPITAL, army=0, owner=1)  # 王城，兵力被打空
+    state.tiles[c] = make_tile(Terrain.PLAIN, army=10, owner=1)  # 另一块领土
+    state.players[0].capital = a
+    state.players[1].capital = b
+    for idx in range(state.tile_count):
+        if idx not in (a, b, c):
+            state.tiles[idx] = make_tile(Terrain.PLAIN, army=0, owner=None)
+    state.tick = 1
+
+    enqueue_move(state, 0, a, Dir.RIGHT, 1.0)  # 到达 6
+    report = tick.step(state)
+
+    assert state.tiles[b].owner == 0
+    assert state.tiles[b].army == 6
+    assert state.tiles[b].terrain == Terrain.CITY, "被攻占的王城转首都转化型城市（R5.4）"
+    assert state.tiles[b].city_from_capital is True
+    # 全继承：c 每块 max(army//2, 1)（R5.2）
+    assert state.tiles[c].owner == 0
+    assert state.tiles[c].army == 5
+    assert state.players[1].capital is None
+    assert any(ev.captured_capital for ev in report.captures)
+
+
 def test_battle_result_has_no_tile_mutation_contract_r4_3() -> None:
     tile = make_tile(Terrain.CITY, army=40, owner=None)
     result = resolve_battle([Flight(owner=3, src=7, dst=8, amount=50)], tile)

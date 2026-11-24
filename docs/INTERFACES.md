@@ -135,6 +135,7 @@ def resolve_battle(arrivals: list[Flight], tile: Tile) -> BattleResult:
     """R3.8 / R4.3 / R4.4：把到达兵力与守军按阵营求和后互减。
     守军：有主地块记在 tile.owner 下；中立地块（驻军 > 0）记在 NEUTRAL_OWNER 下，
     所以打中立城市同样是互减（剩余 = 到达 − 驻军），不是累加。
+    守军兵力为 0 时不进参战集合（视同无战斗），控制权转移由 tick 层按 R4.4 完成。
     后置：BattleResult 含 winner(owner|None|NEUTRAL_OWNER) 与 remaining，不直接改写 tile。"""
 ```
 

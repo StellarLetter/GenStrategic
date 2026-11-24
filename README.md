@@ -52,7 +52,7 @@ scripts/                  一键脚本 + 端到端冒烟
 | 模块 | 状态 | 说明 |
 | --- | --- | --- |
 | 文档（RULES / ARCHITECTURE / INTERFACES / PROTOCOL / AI_API） | ✅ | 规则事实源 `R1.1–R7.4`；变更过程单列在 [`docs/DECISIONS.md`](docs/DECISIONS.md) |
-| `server/generals/game` 纯内核 | ✅ | 随机地图（边长由人数决定、无对称、首都曼哈顿间距 ≥13）/ 中立敌对（R3.8）/ 调兵链与预调兵（R4.11）/ 作废级联（R4.12）/ 遭遇战 / 阵地战 / 增长 / 王城继承 / 投降 / 视野投影 |
+| `server/generals/game` 纯内核 | ✅ | 随机地图（边长由人数决定、无对称、首都曼哈顿间距 ≥13）/ 中立敌对（R3.8）/ 调兵链与预调兵（R4.11）/ 作废级联（R4.12）/ 遭遇战 / 阵地战（含敌方 0 兵力地块按 R4.4 易手）/ 增长 / 王城继承 / 投降 / 视野投影 |
 | `server/generals/net` 房间与连接 | ✅ | 大厅、席位、协议编解码、视野增量、慢客户端处理、刻时钟、`chain_dropped` 作废反馈、聊天栏只播三种消息（R6.10）、边长随开局人数（R2.3） |
 | `server/generals/ai` AI 接口 | ✅ | `register()` 注册 + `hold/greedy/random` 内置策略 + `RemoteAgent`（进程外 HTTP）；比例调兵限定在真人的十档 `RATIOS`（R6.6） |
 | `server/generals/transport` + `app` | ✅ | FastAPI 装配、`/api/rooms`、`/api/config`、`/healthz`、`/ws`、静态托管 `web/dist` |

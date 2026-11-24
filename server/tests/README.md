@@ -69,9 +69,9 @@ lead 指定的验收命令（从仓库根目录）：
 | R4.1 | 请求 = (起点, 方向, 比例)，方向 4 相邻；不可向山地调兵 | `test_kernel_commands.py::test_enqueue_rejects_out_of_board_r4_1`、`test_enqueue_rejects_out_of_board_src_bad_frame_r4_1`、`test_kernel_view.py::test_neighbours4_orders_and_drops_out_of_board` |
 | R4.2 | 移动量 `min(ceil(army*ratio), army-1)`；`<= 0` 不处理；1 兵调不动 | `test_launched_amount_ceil_and_cap_r4_2`、`test_launched_amount_never_exceeds_army_minus_one_r4_2`、`test_zero_army_request_is_dropped_r4_2_r4_12` |
 | R4.3 | 阵地战：各方求和互减；最大者胜；并列最大全归零且不占领；**中立驻军也是独立一方** | `test_kernel_combat.py` 全部 `*_r4_3` 用例（含 `test_neutral_garrison_fights_and_is_subtracted_r3_8_r4_3`、`test_two_players_versus_neutral_garrison_r4_3` 等 9 项） |
-| R4.4 | 战斗后到达兵力 `> 0` 即被到达方占领，兵力 = 剩余兵力（不与驻军累加） | `test_encounter_then_battle_in_one_tick_r7_1`、`test_capture_zeroes_defender_visible_army_r4_10`、`test_tick_capture_neutral_city_subtracts_garrison_r3_8_r4_4` |
+| R4.4 | 战斗后到达兵力 `> 0` 即被到达方占领，兵力 = 剩余兵力（不与驻军累加）；**敌方 0 兵力地块同样易手** | `test_encounter_then_battle_in_one_tick_r7_1`、`test_capture_zeroes_defender_visible_army_r4_10`、`test_tick_capture_neutral_city_subtracts_garrison_r3_8_r4_4`、`test_capture_enemy_zero_army_tile_r4_4`、`test_repeated_attack_after_tie_captures_zero_army_tile_r4_3_r4_4`、`test_capture_zero_army_enemy_capital_inherits_r4_4_r5_2` |
 | R4.5 | 遭遇战：A→B 与 B→A 抵消，胜方剩余继续飞 | `test_encounter_mutual_cross_r4_5`、`test_encounter_equal_amounts_both_vanish_r4_5`、`test_encounter_does_not_touch_unpaired_flights_r4_5`、`test_encounter_three_way_not_possible_r4_5` |
-| R4.6 | **己方地块**：`目标兵力 = 原兵力 + 到达兵力`（不设上限）；中立不累加 | `test_battle_friendly_arrival_accumulates_r4_6`、`test_battle_neutral_single_arrival_no_fight_r4_6` |
+| R4.6 | **己方地块**：`目标兵力 = 原兵力 + 到达兵力`（不设上限）；中立不累加；0 兵力地块不参战、直接易手 | `test_battle_friendly_arrival_accumulates_r4_6`、`test_battle_neutral_single_arrival_no_fight_r4_6`、`test_capture_enemy_zero_army_tile_r4_4` |
 | R4.7 | 每玩家每 Tick 只处理 1 条（FIFO） | `test_fifo_pops_one_request_per_tick_r4_7`、`test_chain_limit_rejects_21st_request_r4_7` |
 | R4.8 | 同一地块单 Tick 最多发 1 次调兵 | `test_fifo_pops_one_request_per_tick_r4_7`（R4.7 的直接结果） |
 | R4.9 | 山地 = 不可通行；服务端按真实地形判定 | `test_enqueue_rejects_mountain_target_r4_9`、`test_mountain_target_never_receives_flight_r4_9` |
